@@ -14,8 +14,8 @@ from pydantic import BaseModel, Field
 
 import auth
 import db
+import defrag as defrag_mod
 import engine as engine_mod
-import frag
 import wfg as wfg_mod
 
 router = APIRouter()
@@ -628,7 +628,7 @@ def batch(request: Request, body: Batch):
 def defrag(request: Request, body: DefragReq | None = None):
     auth.require_admin(_viewer(request))
     cluster = body.cluster if body else "all"
-    # frag.py indexes rows positionally, so use the default tuple-row
+    # defrag.py indexes rows positionally, so use the default tuple-row
     # connection here rather than the dict-row one the read endpoints use.
     with db.connect() as c:
         if cluster == "all":
@@ -638,12 +638,12 @@ def defrag(request: Request, body: DefragReq | None = None):
             mids = [int(cluster)]
         results = []
         for mid in mids:
-            st = frag.cluster_status(c, mid)
+            st = defrag_mod.cluster_status(c, mid)
             if not st:
                 continue
-            moves = frag.defrag_plan(c, mid)
-            eid = frag.apply_defrag(c, mid, moves, triggered_by="MANUAL", reason="api request")
-            after = frag.cluster_status(c, mid)
+            moves = defrag_mod.defrag_plan(c, mid)
+            eid = defrag_mod.apply_defrag(c, mid, moves, triggered_by="MANUAL", reason="api request")
+            after = defrag_mod.cluster_status(c, mid)
             results.append({
                 "machine_id": mid, "event_id": eid, "moves": len(moves),
                 "frag_before": float(st["frag_index"]),

@@ -38,7 +38,7 @@ def priority(jobs, now=None):
 def round_robin(jobs, quantum=QUANTUM_SEC):
     """Yield (job, slice_seconds) until every job has burned its remaining time.
 
-    ponytail: this preempts the *simulated* duration, not a real process. Real
+    Note: this preempts the *simulated* duration, not a real process. Real
     preemption would mean SIGSTOP/SIGCONT on a child process; upgrade there if
     the workers ever stop being time.sleep().
     """

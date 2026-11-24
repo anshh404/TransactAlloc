@@ -10,7 +10,7 @@ from queue import PriorityQueue
 from typing import Optional
 
 import db
-import live_deadlock as live_deadlock_mod
+import deadlock as live_deadlock_mod
 import policies
 import scheduler as scheduler_mod
 import worker as worker_mod

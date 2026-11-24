@@ -79,7 +79,7 @@ class WaitForGraph:
         the same input always reports the same cycle -- a demo that names a
         different victim each run is not a demo.
 
-        ponytail: recursive DFS, so the depth is capped by the interpreter's
+        Note: recursive DFS, so the depth is capped by the interpreter's
         recursion limit. Fine for a cluster of jobs; swap in an explicit stack
         if the graph ever gets thousands of nodes deep.
         """

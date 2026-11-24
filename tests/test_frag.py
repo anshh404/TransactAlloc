@@ -1,5 +1,5 @@
 import db
-import frag
+import defrag as frag
 
 
 def setup_module():

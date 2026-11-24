@@ -44,18 +44,20 @@ best-fit, allocated through real ACID transactions, and monitored live.
 | File | Responsibility |
 |---|---|
 | `db.py` | environment-driven database configuration; `connect()`, `run_sql_file()`, reset helpers |
-| `schema.sql` / `seed.sql` | 3NF schema + transactional functions; 4-cluster seed |
+| `schema.sql` / `seed.sql` | 3NF schema + transactional functions; 4-cluster, 500 GB seed |
 | `engine.py` | the engine: bounded queue, worker pool, adaptive policy selection, reconciler, deadlock monitor, metrics sampler |
 | `worker.py` | one job's lifecycle: pick cluster → allocate → run → release, with FRAGMENTED→defrag→retry |
-| `frag.py` | fragmentation queries, defrag plan, apply-defrag |
+| `defrag.py` | fragmentation queries, defrag plan, apply-defrag (`frag.py` is an alias) |
+| `deadlock.py` | live two-phase hold-and-wait sessions (`live_deadlock.py` is an alias) |
 | `adaptive.py` | pure rule function: given queue/running → which policy |
 | `policies.py` | FCFS, Priority, Round-Robin (scheduling); best-fit / first-fit (placement) |
 | `wfg.py` | wait-for graph, cycle detection, youngest-victim selection |
 | `banker.py` | Banker's algorithm (avoidance), kept for the report's comparison |
 | `api.py` / `app.py` | HTTP layer and ASGI app |
 | `evaluate.py` | drives the app through a workload per policy, emits metrics |
-| `demo.py` / `test_deadlock.py` | the report §5 scripted walkthrough |
-| `static/` | the dashboard (vanilla HTML/CSS/JS) |
+| `demo.py` / `test_deadlock.py` | the report §5 walkthrough and deadlock test |
+| `test_defrag.py` | defrag merge + migration-accuracy test |
+| `static/` | the web dashboard (vanilla HTML/CSS/JS) |
 
 ---
 

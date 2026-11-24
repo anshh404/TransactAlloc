@@ -1,5 +1,5 @@
 /* =====================================================================
-   Cloud Management System - dashboard client
+   TransactAlloc Cloud Resource Manager - dashboard client
    Everything rendered here comes from the live API; nothing is hardcoded.
    Authentication is token based; the server filters data by identity.
    ===================================================================== */
@@ -535,9 +535,9 @@ function drawWFG(container, edges, cycle, details = []) {
   const defs = document.createElementNS(NS, "defs");
   defs.innerHTML =
     `<marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
-       <path d="M0,0 L7,3 L0,6 Z" fill="#6d7a81"/></marker>
+       <path d="M0,0 L7,3 L0,6 Z" fill="#56515d"/></marker>
      <marker id="ahr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
-       <path d="M0,0 L7,3 L0,6 Z" fill="#b3453f"/></marker>`;
+       <path d="M0,0 L7,3 L0,6 Z" fill="#a05c60"/></marker>`;
   svg.appendChild(defs);
   for (const [a, b] of safeEdges) {
     const [x1, y1] = pos[a], [x2, y2] = pos[b];
@@ -548,7 +548,7 @@ function drawWFG(container, edges, cycle, details = []) {
     const line = document.createElementNS(NS, "line");
     line.setAttribute("x1", x1 + ux * rr); line.setAttribute("y1", y1 + uy * rr);
     line.setAttribute("x2", x2 - ux * rr); line.setAttribute("y2", y2 - uy * rr);
-    line.setAttribute("stroke", inCycle ? "#b3453f" : "#6d7a81");
+    line.setAttribute("stroke", inCycle ? "#a05c60" : "#56515d");
     line.setAttribute("stroke-width", inCycle ? 2.6 : 1.6);
     line.setAttribute("marker-end", inCycle ? "url(#ahr)" : "url(#ah)");
     const title = document.createElementNS(NS, "title");
@@ -560,7 +560,7 @@ function drawWFG(container, edges, cycle, details = []) {
     mid.setAttribute("y", (y1 + y2) / 2 - 5);
     mid.setAttribute("text-anchor", "middle");
     mid.setAttribute("font-size", "9");
-    mid.setAttribute("fill", inCycle ? "#9c3833" : "#4b5860");
+    mid.setAttribute("fill", inCycle ? "#803f43" : "#56515d");
     mid.textContent = `${a} → ${b}`;
     const labelTitle = document.createElementNS(NS, "title");
     labelTitle.textContent = label;
@@ -571,14 +571,14 @@ function drawWFG(container, edges, cycle, details = []) {
     const [x, y] = pos[n];
     const c = document.createElementNS(NS, "circle");
     c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 20);
-    c.setAttribute("fill", cycle.has(n) ? "#f8ebea" : "#e8f2f0");
-    c.setAttribute("stroke", cycle.has(n) ? "#b3453f" : "#0f6b62");
+    c.setAttribute("fill", cycle.has(n) ? "#f6ecec" : "#efeaf3");
+    c.setAttribute("stroke", cycle.has(n) ? "#a05c60" : "#6d587d");
     c.setAttribute("stroke-width", 2);
     svg.appendChild(c);
     const t = document.createElementNS(NS, "text");
     t.setAttribute("x", x); t.setAttribute("y", y + 4); t.setAttribute("text-anchor", "middle");
     t.setAttribute("font-size", "12"); t.setAttribute("font-weight", "600");
-    t.setAttribute("fill", cycle.has(n) ? "#9c3833" : "#0a5149");
+    t.setAttribute("fill", cycle.has(n) ? "#803f43" : "#4b3b59");
     t.textContent = "#" + n;
     svg.appendChild(t);
   }
@@ -602,11 +602,11 @@ function lineChart(container, series, { height = 220, yMax = null } = {}) {
     const y = padT + (i / 4) * (H - padT - padB);
     const g = document.createElementNS(NS, "line");
     g.setAttribute("x1", padL); g.setAttribute("x2", W - padR); g.setAttribute("y1", y); g.setAttribute("y2", y);
-    g.setAttribute("stroke", "#e1e6e8");
+    g.setAttribute("stroke", "#e3dfe6");
     svg.appendChild(g);
     const lab = document.createElementNS(NS, "text");
     lab.setAttribute("x", padL - 6); lab.setAttribute("y", y + 4); lab.setAttribute("text-anchor", "end");
-    lab.setAttribute("font-size", "10"); lab.setAttribute("fill", "#7b888f");
+    lab.setAttribute("font-size", "10"); lab.setAttribute("fill", "#89828f");
     lab.textContent = num(maxY * (1 - i / 4), 0);
     svg.appendChild(lab);
   }
@@ -628,13 +628,13 @@ function lineChart(container, series, { height = 220, yMax = null } = {}) {
 function renderCharts() {
   const eng = history ? history.engine : [];
   lineChart($("chartQueue"), [
-    { name: "queue depth", color: "#9a6a12", points: eng.map((e) => ({ x: e.t, y: e.queue_depth })) },
-    { name: "running", color: "#2f7d5d", points: eng.map((e) => ({ x: e.t, y: e.running_jobs })) },
+    { name: "queue depth", color: "#a8843c", points: eng.map((e) => ({ x: e.t, y: e.queue_depth })) },
+    { name: "running", color: "#5b7a68", points: eng.map((e) => ({ x: e.t, y: e.running_jobs })) },
   ]);
 
   const byHost = {};
   (history ? history.metrics : []).forEach((m) => (byHost[m.hostname] = byHost[m.hostname] || []).push({ x: m.t, y: m.frag_index }));
-  const colors = ["#0f6b62", "#9a6a12", "#4b5860", "#b3453f"];
+  const colors = ["#6d587d", "#a8843c", "#56515d", "#a05c60"];
   lineChart($("chartFrag"),
     Object.keys(byHost).map((h, i) => ({ name: h, color: colors[i % colors.length], points: byHost[h] })));
 }

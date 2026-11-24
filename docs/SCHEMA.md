@@ -29,6 +29,11 @@ Who submits work, under what quota.
 | `ip_address` | `INET NOT NULL` | |
 | `status` | `TEXT` | `ONLINE` / `OFFLINE` / `MAINTENANCE` |
 
+The seed provisions four clusters with **500 GB (512000 MB) of RAM in total**:
+two 64 GB clusters that preserve the report §5 deadlock scenario, a 128 GB
+cluster and a 244 GB cluster. All of it is modelled as `Memory_Blocks`, so the
+whole 500 GB is subject to the partition invariant below.
+
 ### `CPU_Resources` (1:1 with `Machines`)
 | Column | Type | Notes |
 |---|---|---|

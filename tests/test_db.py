@@ -8,7 +8,7 @@ import psycopg
 import banker
 import db
 import demo
-import frag
+import defrag as frag
 import wfg
 
 
@@ -69,30 +69,38 @@ def test_insufficient_resources_rolls_back_cleanly():
 
 
 def test_fragmented_is_distinct_from_insufficient():
-    """50% free, but nothing fits: the exact problem TransactAlloc exists for.
+    """Half the RAM is free, but nothing fits: the problem TransactAlloc exists for.
 
-    cluster 3 is 32768 MB. Three 8192 MB allocations fill 24576 MB, leaving
-    one 8192 MB hole at the top. Releasing the middle allocation leaves free
-    RAM fragmented as [8192, 8192] while an allocation of 16000 MB -- less
-    than the 16384 MB that is free -- fits in neither hole.
+    Split cluster 3 into four equal blocks. Three allocations consume three of
+    them; releasing the middle one leaves two equal holes separated by the
+    third allocation. A request just under the aggregate free RAM still fits in
+    neither hole, so the allocator must report FRAGMENTED rather than
+    INSUFFICIENT_RESOURCES. The size is derived from the seed so the test keeps
+    working as cluster capacities change (the seed now totals 500 GB).
     """
     with db.connect() as c:
-        js = [_new_job(c, 1, 8192) for _ in range(3)]
+        total = c.execute(
+            "SELECT total_ram_mb FROM Memory_Resources WHERE machine_id=3"
+        ).fetchone()[0]
+        block = total // 4
+        assert total % 4 == 0, "test needs a capacity divisible by four"
+
+        js = [_new_job(c, 1, block) for _ in range(3)]
         c.commit()
         for j in js:
-            c.execute("SELECT AllocateJobResources(%s,3,%s,%s)", (j, 1, 8192))
+            c.execute("SELECT AllocateJobResources(%s,3,%s,%s)", (j, 1, block))
         c.execute("SELECT ReleaseJobResources(%s)", (js[1],))
         c.commit()
 
         st = frag.cluster_status(c, 3)
-        assert st["free_ram_mb"] == 16384 and st["holes"] == 2
-        assert st["largest_free_mb"] == 8192
+        assert st["free_ram_mb"] == 2 * block and st["holes"] == 2
+        assert st["largest_free_mb"] == block
 
-        big = _new_job(c, 1, 16000)
+        big = _new_job(c, 1, 2 * block - 16)
         c.commit()
         try:
             with c.transaction():
-                c.execute("SELECT AllocateJobResources(%s,3,%s,%s)", (big, 1, 16000))
+                c.execute("SELECT AllocateJobResources(%s,3,%s,%s)", (big, 1, 2 * block - 16))
             assert False, "no single hole is large enough, so this must fail"
         except psycopg.errors.RaiseException as exc:
             msg = str(exc)

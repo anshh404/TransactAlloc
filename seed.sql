@@ -23,10 +23,11 @@ INSERT INTO Machines (hostname, ip_address, status) VALUES
     ('cluster-gamma', '192.168.1.103', 'ONLINE'),
     ('cluster-delta', '192.168.1.104', 'ONLINE');
 
+-- Four clusters managing 500 GB of RAM in total (512000 MB).
 -- Clusters 1 and 2 keep the report section 5 shape (20 cores / 64 GB) so the
--- phase 3 deadlock scenario still reproduces exactly. Clusters 3 and 4 add
--- the asymmetry: a small one that fragments first, and a large one that
--- best-fit will prefer to overflow onto.
+-- phase 3 deadlock scenario still reproduces exactly. Clusters 3 and 4 hold
+-- the remaining 372 GB in deliberately different shapes: a tighter one that
+-- fragments first, and a large one that best-fit will prefer to overflow onto.
 INSERT INTO CPU_Resources (machine_id, total_cores, allocated_cores, clock_speed_ghz) VALUES
     (1, 20, 0, 3.20),
     (2, 20, 0, 2.80),
@@ -34,10 +35,12 @@ INSERT INTO CPU_Resources (machine_id, total_cores, allocated_cores, clock_speed
     (4, 48, 0, 2.60);
 
 INSERT INTO Memory_Resources (machine_id, total_ram_mb, allocated_ram_mb, swap_mb) VALUES
-    (1,  65536, 0,  8192),
-    (2,  65536, 0, 16384),
-    (3,  32768, 0,  4096),
-    (4, 131072, 0, 32768);
+    (1,  65536, 0,  8192),   --  64 GB   (report node 01)
+    (2,  65536, 0, 16384),   --  64 GB   (report node 02)
+    (3, 131072, 0,  8192),   -- 128 GB
+    (4, 249856, 0, 32768);   -- 244 GB
+                             -- ---------
+                             -- 500 GB total
 
 -- Every cluster starts as one contiguous free region: no fragmentation
 -- has happened yet, so frag_index reads 0.0 across the board.

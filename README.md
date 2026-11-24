@@ -1,10 +1,12 @@
-# TransactAlloc
+# TransactAlloc: Adaptive Cloud Resource Manager with Fragmentation-Aware Reallocation
+
+*B.Tech OSDBMS-V26-T198 — Team ArcReactor (T198)*
 
 An **adaptive, fragmentation-aware cloud resource manager** built on
-PostgreSQL. Four clusters, a live dashboard, and a full DBMS treatment:
-normalised schema, ACID allocation, external-fragmentation tracking with
-defragmentation, wait-for-graph deadlock detection with rollback, and a
-performance evaluation.
+PostgreSQL. Four clusters managing **500 GB of RAM**, a live dashboard, and a
+full DBMS treatment: normalised schema, ACID allocation, external-fragmentation
+tracking with defragmentation, wait-for-graph deadlock detection with rollback,
+and a performance evaluation.
 
 This is the merged phase-3 deliverable: the console deadlock work is folded
 into a running web service with a real block-level memory model.
@@ -148,9 +150,22 @@ and its tests; the dashboard does not call it.
 
 ## Tests
 
+With PostgreSQL initialized (`py -3 main.py init`), the whole suite passes:
+
 ```powershell
-py -3 -m pytest tests -q
+py -3 -m pytest -q
 ```
+
+The two tests named in the project synopsis live at the repository root:
+
+- `test_defrag.py` — proves fragmented free blocks are merged into larger
+  chunks and that every migration is recorded accurately in `Defrag_Moves`
+  (old address → new address) with a valid block map afterwards.
+- `test_deadlock.py` — proves wait-for-graph cycle detection and youngest-victim
+  rollback under the report's circular-wait scenario, plus Banker's avoidance
+  refusing the same unsafe grant. Both can also be run as scripts.
+
+The rest of the suite:
 
 - `tests/test_evaluate.py`, `tests/test_pure.py`, `tests/test_cli.py`, and
   `tests/test_engine.py` — database-free evaluation, policies, WFG, Banker,
@@ -161,16 +176,15 @@ py -3 -m pytest tests -q
 - `tests/test_api_e2e.py` — the whole app in-process: submit → run → stats,
   policy switch, defrag, deadlock demo, graceful stop & resume.
 
-The database-free suite used by CI is:
+The database-free subset (no PostgreSQL needed) is:
 
 ```powershell
 py -3 -m pytest tests\test_evaluate.py tests\test_pure.py tests\test_cli.py tests\test_engine.py -q
 ```
 
-The remaining database-dependent tests require PostgreSQL and initialized
-schema/seed data. They are not claimed as passing in the current local
-environment because authentication for user `postgres` failed during fixture
-setup.
+> Only one engine should run against the database at a time. A leftover
+> `main.py serve` process shares the same `Jobs` table and its reconciler will
+> re-admit jobs another engine has just parked as `QUEUED`.
 
 ---
 
@@ -231,19 +245,28 @@ database lock is held during that wait, so only the scheduler can see it.
 
 ## Project layout
 
+Key modules (as listed in the project synopsis): `main.py`, `scheduler.py`,
+`defrag.py`, `deadlock.py`, `dashboard.py`, `schema.sql`.
+
 ```
-schema.sql  seed.sql        database: schema + seed
+schema.sql  seed.sql        database: schema + seed (4 clusters / 500 GB RAM)
 db.py                       connection + reset helpers
 engine.py                   queue, worker pool, adaptive policy, reconciler,
                             deadlock monitor, metrics sampler
 worker.py                   one job's lifecycle over real transactions
-frag.py adaptive.py         fragmentation + policy selection
+defrag.py adaptive.py       fragmentation/compaction + policy selection
+deadlock.py                 live two-phase hold-and-wait sessions
 policies.py wfg.py banker.py scheduling / placement / graph / avoidance
 api.py app.py main.py       HTTP layer, ASGI app, CLI
+dashboard.py                console node-metrics renderer
 evaluate.py demo.py         evaluation harness, report walkthrough
-static/                     dashboard (index.html, styles.css, app.js)
-tests/                      pytest suite
+test_defrag.py              defrag migration-accuracy test (synopsis)
+test_deadlock.py            deadlock detection/rollback test (synopsis)
+static/                     web dashboard (index.html, styles.css, app.js)
+tests/                      remaining pytest suite
 docs/                       ER_DIAGRAM.md, SCHEMA.md, ARCHITECTURE.md, EVALUATION.md
+
+frag.py, live_deadlock.py   backward-compatible aliases of defrag/deadlock
 ```
 
 ## Docs

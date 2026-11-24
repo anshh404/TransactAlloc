@@ -12,7 +12,7 @@ import time
 import psycopg
 
 import db
-import frag
+import defrag
 import policies
 
 HEARTBEAT_SEC = 2
@@ -279,10 +279,10 @@ def execute_job(job, worker_id, policy="fcfs"):
                 # attempt defrag
                 try:
                     with conn.transaction():
-                        st = frag.cluster_status(conn, machine_id)
-                        moves = frag.defrag_plan(conn, machine_id)
+                        st = defrag.cluster_status(conn, machine_id)
+                        moves = defrag.defrag_plan(conn, machine_id)
                         if moves:
-                            frag.apply_defrag(conn, machine_id, moves, triggered_by="AUTO", reason="on-demand retry")
+                            defrag.apply_defrag(conn, machine_id, moves, triggered_by="AUTO", reason="on-demand retry")
                 except psycopg.Error:
                     pass
                 # retry
