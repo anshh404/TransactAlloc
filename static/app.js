@@ -1,6 +1,7 @@
 /* =====================================================================
    Cloud Management System - dashboard client
    Everything rendered here comes from the live API; nothing is hardcoded.
+   Authentication is token based; the server filters data by identity.
    ===================================================================== */
 "use strict";
 
@@ -13,6 +14,10 @@ const make = (tag, cls, html) => {
 };
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const cap = (s) => {
+  const v = String(s == null ? "" : s);
+  return v ? v.charAt(0).toUpperCase() + v.slice(1).toLowerCase() : "";
+};
 const num = (n, d = 0) => (n == null || isNaN(n) ? "—" : Number(n).toFixed(d));
 const clock = (ts) => {
   const date = new Date(ts);
@@ -21,18 +26,43 @@ const clock = (ts) => {
     : date.toLocaleTimeString([], { hour12: false });
 };
 
-let SESSION = localStorage.getItem("cms.user") || null;
-let activeAccount = null;      // tab selected in the Account section
+let TOKEN = localStorage.getItem("cms.token") || null;
+let USER = null;                 // from /api/auth/login or /api/auth/me
+let isAdmin = false;             // derived from state.viewer / USER.role
+let loginRole = "Admin";         // role tab selected on the sign-in screen
+let activeAccount = null;        // admin-only account tab selection
 let users = [];
 let state = null;
 let stats = null;
 let history = null;
 let cycleNodes = new Set();
-let demoWfg = null;
+let lastTimelineCount = 0;       // so the live timeline only animates new lines
+let timelinePinned = true;       // follow newest unless the operator scrolls up
 
 /* ------------------------------- transport ---------------------------- */
+function clearSession() {
+  TOKEN = null;
+  USER = null;
+  isAdmin = false;
+  activeAccount = null;
+  users = [];
+  state = null;
+  localStorage.removeItem("cms.token");
+  $("app").hidden = true;
+  showLogin();
+}
+
 async function api(path, opts = {}) {
-  const r = await fetch(path, opts);
+  const headers = Object.assign({}, opts.headers || {});
+  if (TOKEN) headers["Authorization"] = `Bearer ${TOKEN}`;
+  const r = await fetch(path, Object.assign({}, opts, { headers }));
+  if (r.status === 401) {
+    const isLogin = path === "/api/auth/login";
+    if (!isLogin) clearSession();
+    throw new Error(isLogin
+      ? "Invalid credentials or role."
+      : "Session expired. Please sign in again.");
+  }
   if (!r.ok) throw new Error((await r.text()) || r.statusText);
   return r.json();
 }
@@ -45,63 +75,103 @@ const post = (p, body) => api(p, {
 function toast(title, msg, kind = "") {
   const t = make("div", "toast " + kind, `<b>${esc(title)}</b>${esc(msg || "")}`);
   $("toasts").appendChild(t);
-  setTimeout(() => { t.style.opacity = "0"; t.style.transition = "opacity .3s"; }, 3600);
-  setTimeout(() => t.remove(), 4000);
+  // Entrance plays on mount; dismissal replays it the short way out.
+  setTimeout(() => {
+    t.classList.add("out");
+    setTimeout(() => t.remove(), 200);
+  }, 3600);
+}
+
+function setSwapText(el, value) {
+  if (!el || el.textContent === value) return;
+  el.classList.add("swapping");
+  setTimeout(() => {
+    el.textContent = value;
+    el.classList.remove("swapping");
+  }, 90);
 }
 
 /* -------------------------------- login ------------------------------- */
-async function initLogin() {
-  try {
-    users = (await api("/api/users")).users;
-  } catch (e) {
-    $("loginErr").hidden = false;
-    $("loginErr").textContent = "Cannot reach the API: " + e.message;
-    return;
-  }
-  const picker = $("accountPicker");
-  picker.innerHTML = "";
-  let chosen = SESSION;
-  users.forEach((u) => {
-    const opt = make("button", "acct-opt" + (u.username === chosen ? " sel" : ""),
-      `<span class="avatar">${esc(u.username[0].toUpperCase())}</span>${esc(u.username)}`);
-    opt.type = "button";
-    opt.onclick = () => {
-      picker.querySelectorAll(".acct-opt").forEach((n) => n.classList.remove("sel"));
-      opt.classList.add("sel");
-      $("loginUser").value = u.username;
+function showLogin() {
+  $("login").hidden = false;
+  $("loginErr").hidden = true;
+  $("loginPass").value = "";
+}
+function hideLogin() { $("login").hidden = true; }
+
+function initLogin() {
+  const sw = $("roleSwitch");
+  sw.querySelectorAll(".role-opt").forEach((btn) => {
+    btn.onclick = () => {
+      loginRole = btn.dataset.role;
+      sw.querySelectorAll(".role-opt").forEach((b) => {
+        const on = b === btn;
+        b.classList.toggle("active", on);
+        b.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      $("loginErr").hidden = true;
     };
-    picker.appendChild(opt);
   });
-  if (chosen) $("loginUser").value = chosen;
 }
 
 async function signIn() {
-  const name = ($("loginUser").value || "").trim();
+  const username = ($("loginUser").value || "").trim();
+  const password = $("loginPass").value || "";
   const err = $("loginErr");
-  if (!name) { err.hidden = false; err.textContent = "Pick an account or type a username."; return; }
-  if (!users.some((u) => u.username === name)) {
-    err.hidden = false; err.textContent = `No account named "${name}".`;
+  if (!username || !password) {
+    err.hidden = false; err.textContent = "Enter a username and password.";
     return;
   }
   err.hidden = true;
-  SESSION = name;
-  localStorage.setItem("cms.user", name);
-  activeAccount = name;
-  enterApp();
+  TOKEN = null; // the sign-in request itself must not carry a stale bearer
+  try {
+    const r = await api("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, expected_role: loginRole }),
+    });
+    TOKEN = r.token;
+    localStorage.setItem("cms.token", TOKEN);
+    USER = r.user;
+    isAdmin = !!(USER && USER.role === "Admin");
+    activeAccount = USER ? USER.username : username;
+    enterApp();
+  } catch (e) {
+    err.hidden = false;
+    err.textContent = e.message || "Sign in failed.";
+  }
 }
 
-function signOut() {
-  SESSION = null;
-  localStorage.removeItem("cms.user");
-  $("app").hidden = true;
-  $("login").style.display = "";
-  initLogin();
+async function signOut() {
+  try { await api("/api/auth/logout", { method: "POST" }); } catch (e) {}
+  clearSession();
+}
+
+function viewer() {
+  if (state && state.viewer && (state.viewer.role || state.viewer.username)) return state.viewer;
+  return USER || {};
+}
+
+function applyRole() {
+  const v = viewer();
+  isAdmin = (v.role || "User") === "Admin";
+  document.querySelectorAll(".admin-only").forEach((el) => { el.hidden = !isAdmin; });
+
+  const uname = v.username || (USER && USER.username) || null;
+  if (!isAdmin) activeAccount = uname;
+  else if (!activeAccount) activeAccount = uname;
+
+  const dl = (state && state.deadlock) || {};
+  const status = dl.status || "idle";
+  $("dlResolve").disabled = !isAdmin || status !== "detected";
+  $("dlTrigger").disabled = !isAdmin ||
+    ["triggering", "awaiting_detection", "detected", "resolving"].indexOf(status) >= 0;
 }
 
 function enterApp() {
-  $("login").style.display = "none";
+  hideLogin();
   $("app").hidden = false;
-  activeAccount = activeAccount || SESSION;
+  applyRole();
   refresh();
   refreshUsers();
   refreshStats();
@@ -157,10 +227,11 @@ function renderKPIs() {
   const defs = [
     ["Active jobs", c.running, `${running.length} running`, "k-ok"],
     ["Queue depth", c.queued, "waiting to place", "k-warn"],
-    ["Completed", c.completed, `${c.failed} failed`, "k-cyan"],
+    ["Completed", c.completed, `${c.failed} failed`, "k-accent"],
     ["Throughput", num(perMin, 1), "jobs / min", ""],
-    ["Avg wait", num(avgWait, 1) + "s", "in-flight jobs", "k-violet"],
-    ["Peak frag", num(peakFrag, 3), `${deadlocks} deadlock evt · ${defragRuns} defrags`, peakFrag >= 0.5 ? "k-danger" : "k-violet"],
+    ["Avg wait", num(avgWait, 1) + "s", "in-flight jobs", ""],
+    ["Peak frag", num(peakFrag, 3), `${deadlocks} deadlocks · ${defragRuns} defrags`,
+      peakFrag >= 0.5 ? "k-danger" : "k-warn"],
   ];
   $("kpis").innerHTML = defs.map(([l, v, s, k]) =>
     `<div class="kpi ${k}"><div class="kpi-label">${l}</div>
@@ -180,17 +251,17 @@ function renderClusterCards() {
         <div><div class="cluster-name">${esc(cl.hostname)}</div>
              <div class="cluster-id">#${cl.machine_id} · ${esc(cl.ip_address)}</div></div>
         <span class="pill ${cl.status === "ONLINE" ? (busy ? "busy" : "online") : "offline"}">
-          ${busy && cl.status === "ONLINE" ? "BUSY" : esc(cl.status)}</span>
+          ${cap(busy && cl.status === "ONLINE" ? "BUSY" : cl.status)}</span>
       </div>
       <div class="metric">
         <div class="metric-row"><span class="k">CPU</span>
           <span class="v">${cl.allocated_cores}/${cl.total_cores} · ${num(pc, 1)}%</span></div>
-        <div class="bar"><i class="fill-cpu" style="width:${pc}%"></i></div>
+        <div class="bar"><i class="fill-cpu" style="--v:${(pc / 100).toFixed(4)}"></i></div>
       </div>
       <div class="metric">
         <div class="metric-row"><span class="k">RAM</span>
           <span class="v">${num(cl.allocated_ram_mb / 1024, 1)}/${num(cl.total_ram_mb / 1024, 1)} GB · ${num(pr, 1)}%</span></div>
-        <div class="bar"><i class="fill-ram" style="width:${pr}%"></i></div>
+        <div class="bar"><i class="fill-ram" style="--v:${(pr / 100).toFixed(4)}"></i></div>
       </div>
       <div class="metric">
         <div class="metric-row"><span class="k">Holes</span>
@@ -208,25 +279,34 @@ function renderClusterCards() {
 function renderAccountTabs() {
   const tabs = $("accountTabs");
   tabs.innerHTML = "";
-  const me = SESSION;
+  const me = USER ? USER.username : (state && state.viewer && state.viewer.username);
   const ordered = [...users].sort((a, b) => (b.username === me) - (a.username === me));
   for (const u of ordered) {
     const t = make("button", "tab" + (u.username === activeAccount ? " active" : ""),
       esc(u.username) + (u.username === me ? " · you" : ""));
+    t.type = "button";
     t.onclick = () => { activeAccount = u.username; renderAccountTabs(); renderAccount(); };
     tabs.appendChild(t);
   }
 }
 
 function renderAccount() {
-  const u = users.find((x) => x.username === activeAccount);
+  const v = viewer();
+  const uname = activeAccount || v.username || (USER && USER.username);
+  if (!isAdmin) activeAccount = uname;
+  let u = users.find((x) => x.username === uname);
+  if (!u && USER && USER.username === uname) u = USER;
   if (!u) { $("accountCard").innerHTML = `<div class="empty">Select an account.</div>`; return; }
+  u = Object.assign({
+    used_cpus: 0, quota_cpus: 0, used_ram_mb: 0, quota_ram_mb: 0,
+    active_clusters: [], queued: 0, running: 0, completed: 0, failed: 0,
+  }, u);
   const cpuPct = u.quota_cpus ? (u.used_cpus / u.quota_cpus) * 100 : 0;
   const ramPct = u.quota_ram_mb ? (u.used_ram_mb / u.quota_ram_mb) * 100 : 0;
   $("accountCard").innerHTML = `
     <div class="acct-ident">
       <span class="avatar">${esc(u.username[0].toUpperCase())}</span>
-      <div><h3>${esc(u.username)}</h3><span class="acct-role">${esc(u.role)}</span>
+      <div><h3>${esc(u.username)}</h3><span class="acct-role">${esc(cap(u.role))}</span>
         <div class="muted small" style="margin-top:6px">
           ${u.active_clusters.length ? "active on " + u.active_clusters.map((m) => "#" + m).join(", ") : "not on any cluster"}</div>
       </div>
@@ -234,10 +314,10 @@ function renderAccount() {
     <div class="gauge">
       <div class="metric-row"><span class="k">CPU quota</span>
         <span class="v">${u.used_cpus}/${u.quota_cpus} cores</span></div>
-      <div class="bar"><i class="fill-cpu" style="width:${cpuPct}%"></i></div>
+      <div class="bar"><i class="fill-cpu" style="--v:${Math.min(1, cpuPct / 100).toFixed(4)}"></i></div>
       <div class="metric-row" style="margin-top:8px"><span class="k">RAM quota</span>
         <span class="v">${num(u.used_ram_mb / 1024, 1)}/${num(u.quota_ram_mb / 1024, 1)} GB</span></div>
-      <div class="bar"><i class="fill-ram" style="width:${ramPct}%"></i></div>
+      <div class="bar"><i class="fill-ram" style="--v:${Math.min(1, ramPct / 100).toFixed(4)}"></i></div>
     </div>
     <div class="gauge">
       <div class="metric-row"><span class="k">Queued</span><span class="v">${u.queued}</span></div>
@@ -254,7 +334,7 @@ function renderAccount() {
     box.appendChild(make("div", "mini-job", `
       <span class="jid">#${j.job_id}</span>
       <span class="task">${esc(j.task_name)}</span>
-      <span class="status ${j.status}">${j.status}</span>
+      <span class="status ${j.status}">${cap(j.status)}</span>
       <span class="meta">${j.req_cpus}c · ${j.req_ram_mb}MB</span>`));
   }
 }
@@ -269,7 +349,7 @@ function renderClusterDetails() {
     row.innerHTML = `
       <div>
         <div class="cluster-name">${esc(cl.hostname)} <span class="cluster-id">#${cl.machine_id}</span></div>
-        <div class="cluster-id">${esc(cl.ip_address)} · ${esc(cl.status)} · ${num(cl.clock_speed_ghz, 2)} GHz/core</div>
+        <div class="cluster-id">${esc(cl.ip_address)} · ${cap(cl.status)} · ${num(cl.clock_speed_ghz, 2)} GHz/core</div>
         <div class="strip-legend" style="margin-top:10px"><span class="legend-free"><i></i>free</span>
           <span class="legend-alloc"><i></i>allocated</span></div>
       </div>
@@ -299,32 +379,79 @@ function renderJobs() {
   tb.innerHTML = "";
   const rows = state.jobs.filter((j) =>
     (statusF === "ALL" || j.status === statusF) && (userF === "ALL" || j.username === userF));
-  $("jobsSub").textContent =
-    `${rows.length} of ${state.jobs.length} jobs shown` + (userF !== "ALL" ? ` · account ${userF}` : "");
+  $("jobsSub").textContent = isAdmin
+    ? `${rows.length} of ${state.jobs.length} jobs shown` + (userF !== "ALL" ? ` · account ${userF}` : "")
+    : `${rows.length} of ${state.jobs.length} jobs shown`;
   if (!rows.length) { tb.appendChild(make("tr", "", `<td colspan="11" class="empty">No jobs match the filter.</td>`)); return; }
   for (const j of rows) {
     tb.appendChild(make("tr", "", `
       <td class="mono">#${j.job_id}</td><td>${esc(j.task_name)}</td><td>${esc(j.username)}</td>
       <td class="mono">${j.req_cpus}</td><td class="mono">${j.req_ram_mb}</td><td class="mono">${j.priority}</td>
-      <td><span class="status ${j.status}">${j.status}</span></td>
+      <td><span class="status ${j.status}">${cap(j.status)}</span></td>
       <td class="mono">${j.machine_id ?? "—"}</td><td class="mono">${j.remaining_sec}</td>
       <td class="mono">${num(j.wait_sec, 1)}</td><td class="mono">${num(j.turnaround_sec, 1)}</td>`));
   }
 }
 
+function deadlockStatusText(status) {
+  switch (status) {
+    case "triggering": return "Setting up the deadlock";
+    case "awaiting_detection": return "Waiting for cycle detection";
+    case "detected": return "Deadlock detected";
+    case "resolving": return "Resolving the deadlock";
+    case "resolved": return "Deadlock resolved";
+    case "aborted": return "Deadlock aborted";
+    case "failed": return "Deadlock attempt failed";
+    default: return "Idle";
+  }
+}
+
 function renderDeadlock() {
-  const wfg = demoWfg || state.wfg || {};
+  const dl = (state && state.deadlock) || {};
+  const wfg = (state && state.wfg) || {};
   const edges = Array.isArray(wfg.edges) ? wfg.edges : [];
   const details = Array.isArray(wfg.edge_details) ? wfg.edge_details : [];
-  cycleNodes = demoWfg && Array.isArray(wfg.cycle)
-    ? new Set(wfg.cycle)
+
+  cycleNodes = Array.isArray(dl.cycle) && dl.cycle.length
+    ? new Set(dl.cycle.map((n) => Number(n)))
     : detectCycle(edges);
   drawWFG($("wfgGraph"), edges, cycleNodes, details);
-  const source = demoWfg ? "Last deadlock demo graph" : "Live engine graph";
   $("wfgNote").textContent = edges.length
-    ? `${source}: ${edges.length} wait-for edge(s)` +
-      (cycleNodes.size ? " · cycle present!" : " · acyclic")
-    : `${source}: no wait-for edges.`;
+    ? `Live engine graph: ${edges.length} wait-for edge(s)` +
+      (cycleNodes.size ? " · cycle present" : " · acyclic")
+    : "Live engine graph: no wait-for edges.";
+
+  const status = dl.status || "idle";
+  const badge = $("deadlockStatus");
+  badge.className = "deadlock-status s-" + status;
+  setSwapText($("deadlockStatusText"), deadlockStatusText(status));
+
+  const box = $("deadlockTimeline");
+  const lines = Array.isArray(dl.timeline) ? dl.timeline : [];
+  if (!lines.length) {
+    if (lastTimelineCount !== 0) {
+      box.innerHTML = "";
+      box.appendChild(make("div", "muted small", "No deadlock activity yet."));
+      box.scrollTop = 0;
+    }
+    timelinePinned = true;
+    lastTimelineCount = 0;
+  } else {
+    if (lastTimelineCount > lines.length) {
+      box.innerHTML = "";
+      lastTimelineCount = 0;
+    }
+    const placeholder = box.querySelector(".muted.small");
+    if (placeholder) placeholder.remove();
+    // Only new lines animate; the 1s poll must not replay every entrance.
+    let added = 0;
+    for (let i = lastTimelineCount; i < lines.length; i++) {
+      box.appendChild(make("div", "timeline-line", esc(lines[i])));
+      added++;
+    }
+    lastTimelineCount = lines.length;
+    if (added && timelinePinned) box.scrollTop = box.scrollHeight;
+  }
 
   const feed = $("eventFeed");
   feed.innerHTML = "";
@@ -339,12 +466,13 @@ function renderDeadlock() {
   }
   if (!evs.length) feed.appendChild(make("div", "empty", "No system events yet."));
   for (const e of evs) {
-    const kind = esc(e.kind || "EVENT");
+    const rawKind = e.kind || "EVENT";
+    const kind = esc(rawKind);
     const severity = esc(e.severity || "INFO");
     const deadlockClass = e.kind === "DEADLOCK" ? " deadlock-event" : "";
     feed.appendChild(make("div", "event sev-" + severity + deadlockClass, `
       <span class="ts">${clock(e.ts)}</span>
-      <span class="kind ${kind}">${kind}</span>
+      <span class="kind ${kind}">${cap(rawKind)}</span>
       <span>${esc(e.message)}</span>`));
   }
 }
@@ -407,9 +535,9 @@ function drawWFG(container, edges, cycle, details = []) {
   const defs = document.createElementNS(NS, "defs");
   defs.innerHTML =
     `<marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
-       <path d="M0,0 L7,3 L0,6 Z" fill="#94a3b8"/></marker>
+       <path d="M0,0 L7,3 L0,6 Z" fill="#6d7a81"/></marker>
      <marker id="ahr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
-       <path d="M0,0 L7,3 L0,6 Z" fill="#ef4444"/></marker>`;
+       <path d="M0,0 L7,3 L0,6 Z" fill="#b3453f"/></marker>`;
   svg.appendChild(defs);
   for (const [a, b] of safeEdges) {
     const [x1, y1] = pos[a], [x2, y2] = pos[b];
@@ -420,7 +548,7 @@ function drawWFG(container, edges, cycle, details = []) {
     const line = document.createElementNS(NS, "line");
     line.setAttribute("x1", x1 + ux * rr); line.setAttribute("y1", y1 + uy * rr);
     line.setAttribute("x2", x2 - ux * rr); line.setAttribute("y2", y2 - uy * rr);
-    line.setAttribute("stroke", inCycle ? "#ef4444" : "#94a3b8");
+    line.setAttribute("stroke", inCycle ? "#b3453f" : "#6d7a81");
     line.setAttribute("stroke-width", inCycle ? 2.6 : 1.6);
     line.setAttribute("marker-end", inCycle ? "url(#ahr)" : "url(#ah)");
     const title = document.createElementNS(NS, "title");
@@ -432,7 +560,7 @@ function drawWFG(container, edges, cycle, details = []) {
     mid.setAttribute("y", (y1 + y2) / 2 - 5);
     mid.setAttribute("text-anchor", "middle");
     mid.setAttribute("font-size", "9");
-    mid.setAttribute("fill", inCycle ? "#a11c1c" : "#64748b");
+    mid.setAttribute("fill", inCycle ? "#9c3833" : "#4b5860");
     mid.textContent = `${a} → ${b}`;
     const labelTitle = document.createElementNS(NS, "title");
     labelTitle.textContent = label;
@@ -443,14 +571,14 @@ function drawWFG(container, edges, cycle, details = []) {
     const [x, y] = pos[n];
     const c = document.createElementNS(NS, "circle");
     c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 20);
-    c.setAttribute("fill", cycle.has(n) ? "#fdecec" : "#eef0ff");
-    c.setAttribute("stroke", cycle.has(n) ? "#ef4444" : "#6366f1");
+    c.setAttribute("fill", cycle.has(n) ? "#f8ebea" : "#e8f2f0");
+    c.setAttribute("stroke", cycle.has(n) ? "#b3453f" : "#0f6b62");
     c.setAttribute("stroke-width", 2);
     svg.appendChild(c);
     const t = document.createElementNS(NS, "text");
     t.setAttribute("x", x); t.setAttribute("y", y + 4); t.setAttribute("text-anchor", "middle");
-    t.setAttribute("font-size", "12"); t.setAttribute("font-weight", "700");
-    t.setAttribute("fill", cycle.has(n) ? "#a11c1c" : "#3730a3");
+    t.setAttribute("font-size", "12"); t.setAttribute("font-weight", "600");
+    t.setAttribute("fill", cycle.has(n) ? "#9c3833" : "#0a5149");
     t.textContent = "#" + n;
     svg.appendChild(t);
   }
@@ -474,11 +602,11 @@ function lineChart(container, series, { height = 220, yMax = null } = {}) {
     const y = padT + (i / 4) * (H - padT - padB);
     const g = document.createElementNS(NS, "line");
     g.setAttribute("x1", padL); g.setAttribute("x2", W - padR); g.setAttribute("y1", y); g.setAttribute("y2", y);
-    g.setAttribute("stroke", "#eef0f4");
+    g.setAttribute("stroke", "#e1e6e8");
     svg.appendChild(g);
     const lab = document.createElementNS(NS, "text");
     lab.setAttribute("x", padL - 6); lab.setAttribute("y", y + 4); lab.setAttribute("text-anchor", "end");
-    lab.setAttribute("font-size", "10"); lab.setAttribute("fill", "#94a3b8");
+    lab.setAttribute("font-size", "10"); lab.setAttribute("fill", "#7b888f");
     lab.textContent = num(maxY * (1 - i / 4), 0);
     svg.appendChild(lab);
   }
@@ -500,13 +628,13 @@ function lineChart(container, series, { height = 220, yMax = null } = {}) {
 function renderCharts() {
   const eng = history ? history.engine : [];
   lineChart($("chartQueue"), [
-    { name: "queue depth", color: "#f59e0b", points: eng.map((e) => ({ x: e.t, y: e.queue_depth })) },
-    { name: "running", color: "#10b981", points: eng.map((e) => ({ x: e.t, y: e.running_jobs })) },
+    { name: "queue depth", color: "#9a6a12", points: eng.map((e) => ({ x: e.t, y: e.queue_depth })) },
+    { name: "running", color: "#2f7d5d", points: eng.map((e) => ({ x: e.t, y: e.running_jobs })) },
   ]);
 
   const byHost = {};
   (history ? history.metrics : []).forEach((m) => (byHost[m.hostname] = byHost[m.hostname] || []).push({ x: m.t, y: m.frag_index }));
-  const colors = ["#6366f1", "#06b6d4", "#8b5cf6", "#10b981"];
+  const colors = ["#0f6b62", "#9a6a12", "#4b5860", "#b3453f"];
   lineChart($("chartFrag"),
     Object.keys(byHost).map((h, i) => ({ name: h, color: colors[i % colors.length], points: byHost[h] })));
 }
@@ -547,24 +675,27 @@ function renderStats() {
 /* ------------------------------ top bar ------------------------------- */
 function renderTopbar() {
   $("engineChip").classList.toggle("on", state.engine.running);
-  $("engineText").textContent =
-    state.engine.running ? `running · ${state.engine.workers}w` : "stopped";
+  setSwapText($("engineText"),
+    state.engine.running ? `running · ${state.engine.workers}w` : "stopped");
   $("queueChip").textContent = `queue ${state.counts.queued}`;
   $("policyChip").textContent = `${state.policy.mode}/${state.policy.current}`;
   $("policyChip").title = state.policy.reason || "";
 
-  const u = users.find((x) => x.username === SESSION);
-  if (u) {
-    $("acctAvatar").textContent = u.username[0].toUpperCase();
-    $("acctName").textContent = u.username;
-    $("acctRole").textContent = `${u.role} · ${u.used_cpus}/${u.quota_cpus}c`;
-  }
+  const v = viewer();
+  const uname = v.username || "";
+  const u = users.find((x) => x.username === uname) || USER || {};
+  $("acctAvatar").textContent = uname ? uname[0].toUpperCase() : "?";
+  $("acctName").textContent = uname || "—";
+  const used = u.used_cpus != null ? u.used_cpus : "—";
+  const quota = u.quota_cpus != null ? u.quota_cpus : "—";
+  $("acctRole").textContent = `${v.role || u.role || "User"} · ${used}/${quota}c`;
 }
 
 /* ------------------------------- polling ------------------------------ */
 async function refresh() {
   try {
     state = await api("/api/state");
+    applyRole();
     renderTopbar();
     renderKPIs();
     renderClusterCards();
@@ -575,7 +706,14 @@ async function refresh() {
     renderStats();
   } catch (e) { console.warn(e); }
 }
-async function refreshUsers() { try { users = (await api("/api/users")).users; populateUserFilter(); renderTopbar(); if (state) { renderAccountTabs(); renderAccount(); } } catch (e) {} }
+async function refreshUsers() {
+  try {
+    users = (await api("/api/users")).users;
+    populateUserFilter();
+    renderTopbar();
+    if (state) { renderAccountTabs(); renderAccount(); }
+  } catch (e) {}
+}
 async function refreshStats() { try { stats = await api("/api/stats"); renderStats(); renderKPIs(); } catch (e) {} }
 async function refreshHistory() { try { history = await api("/api/history?minutes=15"); renderCharts(); } catch (e) {} }
 
@@ -589,9 +727,37 @@ async function doDefrag(cluster) {
   } catch (e) { toast("Defrag failed", e.message, "err"); }
 }
 
+async function triggerDeadlock() {
+  try {
+    timelinePinned = true;
+    const r = await post("/api/deadlock/trigger");
+    if (r && r.ok === false) throw new Error(r.error || "Could not trigger the deadlock.");
+    toast("Deadlock", "live deadlock triggered", "ok");
+    refresh(); refreshStats();
+  } catch (e) { toast("Trigger failed", e.message, "err"); }
+}
+
+async function resolveDeadlock() {
+  try {
+    const r = await post("/api/deadlock/resolve");
+    if (r && r.ok === false) throw new Error(r.error || "Could not resolve the deadlock.");
+    toast("Deadlock", "resolved", "ok");
+    refresh(); refreshStats();
+  } catch (e) { toast("Resolve failed", e.message, "err"); }
+}
+
 function wireActions() {
+  // Live timeline: follow new lines only while the operator is at the bottom.
+  const tl = $("deadlockTimeline");
+  tl.addEventListener("wheel", (e) => { if (e.deltaY < 0) timelinePinned = false; }, { passive: true });
+  tl.addEventListener("touchmove", () => { timelinePinned = false; }, { passive: true });
+  tl.addEventListener("scroll", () => {
+    if (tl.scrollHeight - tl.scrollTop - tl.clientHeight < 24) timelinePinned = true;
+  });
+
   $("signin").onclick = signIn;
-  $("loginUser").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(); });
+  [$("loginUser"), $("loginPass")].forEach((el) =>
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(); }));
   $("logout").onclick = signOut;
 
   $("start").onclick = async () => {
@@ -610,11 +776,9 @@ function wireActions() {
     if (!confirm("Reset all jobs and rebuild block maps? The engine will stop.")) return;
     try {
       await post("/api/reset");
-      demoWfg = null;
       toast("Reset", "clusters cleared", "ok");
       refresh(); refreshStats(); refreshHistory();
-    }
-    catch (e) { toast("Reset failed", e.message, "err"); }
+    } catch (e) { toast("Reset failed", e.message, "err"); }
   };
   $("batch").onclick = async () => {
     const count = Math.max(1, Math.min(500, +$("batchCount").value || 20));
@@ -625,34 +789,28 @@ function wireActions() {
 
   $("jobForm").onsubmit = async (ev) => {
     ev.preventDefault();
+    const v = viewer();
+    const submitUser = isAdmin
+      ? activeAccount
+      : (v.username || (USER && USER.username));
     try {
       const r = await post("/api/jobs", {
-        user: activeAccount, task: $("jTask").value || "Task",
+        user: submitUser, task: $("jTask").value || "Task",
         cpus: +$("jCpus").value, ram_mb: +$("jRam").value,
         priority: +$("jPri").value, duration_sec: +$("jDur").value,
       });
-      toast("Submitted", `job #${r.job_id} as ${activeAccount}`, "ok");
+      toast("Submitted", `job #${r.job_id} as ${submitUser}`, "ok");
       refresh(); refreshUsers();
     } catch (e) {
-      const msg = /quota/i.test(e.message) ? "quota exceeded for " + activeAccount : e.message;
+      const msg = /quota/i.test(e.message) ? "quota exceeded for " + submitUser : e.message;
       toast("Submit failed", msg, "err");
     }
   };
 
   $("jobStatusFilter").onchange = renderJobs;
   $("jobUserFilter").onchange = renderJobs;
-  $("dlDemo").onclick = async () => {
-    const box = $("demoTranscript");
-    box.classList.remove("muted"); box.textContent = "Running…";
-    try {
-      const d = await post("/api/deadlock-demo");
-      box.textContent = d.transcript.join("\n");
-      demoWfg = d.graph && typeof d.graph === "object" ? d.graph : null;
-      toast("Deadlock demo", "circular wait resolved", "ok");
-      renderDeadlock();
-      refresh(); refreshStats();
-    } catch (e) { box.textContent = "Demo failed: " + e.message; toast("Demo failed", e.message, "err"); }
-  };
+  $("dlTrigger").onclick = triggerDeadlock;
+  $("dlResolve").onclick = resolveDeadlock;
 }
 
 function populateUserFilter() {
@@ -667,7 +825,20 @@ function populateUserFilter() {
 wireActions();
 initNav();
 initLogin();
-setInterval(() => { if (SESSION && state) refresh(); }, 1000);
-setInterval(() => { if (SESSION) refreshUsers(); }, 2500);
-setInterval(() => { if (SESSION) { refreshStats(); refreshHistory(); } }, 4000);
-if (SESSION) enterApp();
+boot();
+
+async function boot() {
+  if (!TOKEN) { showLogin(); return; }
+  try {
+    const d = await api("/api/auth/me");
+    USER = d.user;
+    activeAccount = USER ? USER.username : null;
+    enterApp();
+  } catch (e) {
+    clearSession();
+  }
+}
+
+setInterval(() => { if (TOKEN && state) refresh(); }, 1000);
+setInterval(() => { if (TOKEN) refreshUsers(); }, 2500);
+setInterval(() => { if (TOKEN) { refreshStats(); refreshHistory(); } }, 4000);

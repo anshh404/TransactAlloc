@@ -20,10 +20,22 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 
 import api
+import auth
 
 app = FastAPI(title="TransactAlloc", version="1.0.0",
               description="Adaptive cloud resource manager with fragmentation-aware reallocation")
 app.include_router(api.router, prefix="/api")
+
+
+@app.on_event("startup")
+def provision_passwords():
+    """Idempotent: older databases gain password verifiers on restart."""
+    try:
+        auth.ensure_passwords()
+    except Exception:
+        # A missing database must not stop the app from starting; the login
+        # endpoint will report the connection problem to the client.
+        pass
 
 
 @app.get("/healthz")

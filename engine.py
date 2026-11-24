@@ -10,6 +10,7 @@ from queue import PriorityQueue
 from typing import Optional
 
 import db
+import live_deadlock as live_deadlock_mod
 import policies
 import scheduler as scheduler_mod
 import worker as worker_mod
@@ -31,6 +32,9 @@ class Engine:
         self.current_policy = "fcfs"
         self.current_reason = "initial"
         self.wfg = wfg_mod.WaitForGraph()
+        # Real hold-and-wait sessions are left for an operator to resolve, so
+        # the automatic resolver must not steal cycles from an active session.
+        self.live_deadlock = live_deadlock_mod.LiveDeadlock(self)
         worker_mod.set_graph(self.wfg)
         worker_mod.set_release_hook(self._discard_job)
         worker_mod.set_stop_event(self._stop)
@@ -135,6 +139,9 @@ class Engine:
             self.submit(job)
 
     def stop(self):
+        # Release any hold-and-wait session before the workers are joined, so
+        # no scenario thread is left holding allocations after a reset.
+        self.live_deadlock.abort()
         self._stop.set()
         self._sampler_stop.set()
         # Workers abort their current job within HEARTBEAT_SEC, so joining with
@@ -250,9 +257,14 @@ class Engine:
 
     def _monitor_once(self):
         cycle = self.wfg.find_cycle()
-        if cycle:
-            return self._resolve_deadlock(cycle)
-        return None
+        if not cycle:
+            return None
+        if self.live_deadlock.has_active():
+            # A two-phase session is in progress. Surface the cycle to the
+            # dashboard and wait for the operator's Resolve action.
+            self.live_deadlock.on_cycle(cycle)
+            return None
+        return self._resolve_deadlock(cycle)
 
     def _resolve_deadlock(self, cycle):
         """Roll back the youngest job in a detected cycle. One transaction."""

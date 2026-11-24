@@ -8,10 +8,11 @@ import random
 import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
+import auth
 import db
 import engine as engine_mod
 import frag
@@ -46,6 +47,12 @@ class DefragReq(BaseModel):
     cluster: int | str = "all"
 
 
+class LoginBody(BaseModel):
+    username: str
+    password: str
+    expected_role: str = Field(pattern=r"^(Admin|User)$")
+
+
 def _dict_conn(autocommit=False):
     return db.connect(autocommit=autocommit, row_factory=dict_row)
 
@@ -74,11 +81,68 @@ def _demo_graph_state(graph, cycle):
     }
 
 
+def _viewer(request: Request) -> dict:
+    return auth.viewer(request)
+
+
+def _scoped_username(who: dict) -> str | None:
+    """Only regular users are scoped; operators and legacy callers see all."""
+    if who.get("authenticated") and not auth.is_admin(who):
+        return who.get("username")
+    return None
+
+
+def _viewer_payload(who: dict) -> dict:
+    return {
+        "username": who.get("username"),
+        "role": who.get("role"),
+        "is_admin": auth.is_admin(who),
+        "authenticated": bool(who.get("authenticated")),
+    }
+
+
+def _deadlock_payload(eng):
+    if eng and hasattr(eng, "live_deadlock"):
+        return eng.live_deadlock.status()
+    return {
+        "active": False, "status": "idle", "cycle": [], "jobs": [],
+        "victim": None, "triggered_at": None, "detected_at": None,
+        "resolved_at": None, "timeline": [],
+    }
+
+
+# ----------------------------------------------------------------------
+# authentication
+# ----------------------------------------------------------------------
+@router.post("/auth/login")
+def auth_login(body: LoginBody):
+    result = auth.login(body.username, body.password, body.expected_role)
+    if not result:
+        raise HTTPException(401, "invalid credentials or role")
+    return {"ok": True, **result}
+
+
+@router.post("/auth/logout")
+def auth_logout(request: Request):
+    auth.logout(auth.bearer_token(request))
+    return {"ok": True}
+
+
+@router.get("/auth/me")
+def auth_me(request: Request):
+    who = _viewer(request)
+    if not who.get("authenticated"):
+        raise HTTPException(401, "not authenticated")
+    return {"ok": True, "user": _viewer_payload(who)}
+
+
 # ----------------------------------------------------------------------
 # state
 # ----------------------------------------------------------------------
 @router.get("/state")
-def state():
+def state(request: Request):
+    who = _viewer(request)
+    username = _scoped_username(who)
     with _dict_conn() as c:
         clusters = c.execute(
             """
@@ -103,8 +167,10 @@ def state():
                      WHERE a.job_id = j.job_id AND a.released_at IS NULL
                      ORDER BY a.alloc_id LIMIT 1) AS machine_id
               FROM Jobs j JOIN Users u ON u.user_id = j.user_id
+             WHERE (%s::text IS NULL OR u.username = %s)
              ORDER BY j.job_id DESC LIMIT 150
-            """
+            """,
+            (username, username),
         ).fetchall()
         for j in jobs:
             submitted = float(j.pop("submitted_epoch") or now)
@@ -118,19 +184,26 @@ def state():
 
         counts = c.execute(
             """
-            SELECT COUNT(*) FILTER (WHERE status='QUEUED')    AS queued,
-                   COUNT(*) FILTER (WHERE status='RUNNING')   AS running,
-                   COUNT(*) FILTER (WHERE status='COMPLETED') AS completed,
-                   COUNT(*) FILTER (WHERE status='FAILED')    AS failed
-              FROM Jobs
-            """
+            SELECT COUNT(*) FILTER (WHERE j.status='QUEUED')    AS queued,
+                   COUNT(*) FILTER (WHERE j.status='RUNNING')   AS running,
+                   COUNT(*) FILTER (WHERE j.status='COMPLETED') AS completed,
+                   COUNT(*) FILTER (WHERE j.status='FAILED')    AS failed
+              FROM Jobs j JOIN Users u ON u.user_id = j.user_id
+             WHERE (%s::text IS NULL OR u.username = %s)
+            """,
+            (username, username),
         ).fetchone()
 
         job_logs = c.execute(
             """
-            SELECT log_id, job_id, ts, log_level, message
-              FROM Execution_Logs ORDER BY ts DESC LIMIT 60
-            """
+            SELECT l.log_id, l.job_id, l.ts, l.log_level, l.message
+              FROM Execution_Logs l
+              JOIN Jobs j ON j.job_id = l.job_id
+              JOIN Users u ON u.user_id = j.user_id
+             WHERE (%s::text IS NULL OR u.username = %s)
+             ORDER BY l.ts DESC LIMIT 60
+            """,
+            (username, username),
         ).fetchall()
         sys_events = c.execute(
             """
@@ -138,6 +211,18 @@ def state():
               FROM System_Events ORDER BY event_id DESC LIMIT 60
             """
         ).fetchall()
+        if username:
+            own = {int(r["job_id"]) for r in c.execute(
+                "SELECT j.job_id FROM Jobs j JOIN Users u ON u.user_id = j.user_id "
+                "WHERE u.username = %s", (username,)
+            ).fetchall()}
+            sys_events = [
+                e for e in sys_events
+                if username in e["message"]
+                or any(f"#{jid}" in e["message"] for jid in own)
+                or (e["kind"] == "DEADLOCK" and any(
+                    f"#{jid}" in e["message"] for jid in own))
+            ]
         defrags = c.execute(
             """
             SELECT d.event_id, m.hostname, d.triggered_by, d.status, d.reason,
@@ -145,9 +230,24 @@ def state():
                    d.largest_after_mb, d.frag_before, d.frag_after,
                    d.blocks_moved, d.mb_moved, d.duration_ms, d.started_at
               FROM Defrag_Events d JOIN Machines m USING (machine_id)
+             WHERE (%s::text IS NULL OR d.machine_id IN (
+                     SELECT DISTINCT a.machine_id FROM Allocations a
+                       JOIN Jobs j ON j.job_id = a.job_id
+                       JOIN Users u ON u.user_id = j.user_id
+                      WHERE u.username = %s))
              ORDER BY d.event_id DESC LIMIT 15
-            """
+            """,
+            (username, username),
         ).fetchall()
+
+        own_ids = {
+            int(r["job_id"])
+            for r in c.execute(
+                "SELECT j.job_id FROM Jobs j JOIN Users u ON u.user_id = j.user_id "
+                "WHERE (%s::text IS NULL OR u.username = %s)",
+                (username, username),
+            ).fetchall()
+        }
 
         # Memory map (block-level layout) so the UI can draw fragmentation as
         # a strip: contiguous runs of FREE / ALLOCATED over [0, total_ram_mb).
@@ -160,6 +260,15 @@ def state():
             )
 
     eng = _engine
+    wfg_payload = _wfg_state(eng)
+    if username:
+        wfg_payload = {
+            "edges": [e for e in wfg_payload["edges"] if e[0] in own_ids or e[1] in own_ids],
+            "edge_details": [
+                d for d in wfg_payload["edge_details"]
+                if d.get("waiter") in own_ids or d.get("holder") in own_ids
+            ],
+        }
     return {
         "clusters": clusters,
         "jobs": jobs,
@@ -174,17 +283,20 @@ def state():
             "reason": eng.current_reason if eng else "engine stopped",
         },
         "engine": {"running": bool(eng and eng.running()), "workers": eng.num_workers if eng else 0},
-        "wfg": _wfg_state(eng),
+        "wfg": wfg_payload,
+        "viewer": _viewer_payload(who),
+        "deadlock": _deadlock_payload(eng),
     }
 
 
 @router.get("/users")
-def users():
-    """Every account with its quota and live usage.
+def users(request: Request):
+    """Accounts with quota and live usage.
 
-    Drives the sign-in picker, the account card and the per-account tabs. All
-    figures are computed from Jobs/Allocations -- nothing is stored twice.
+    An administrator sees every account; a regular user sees only their own.
+    Figures are computed from Jobs/Allocations -- nothing is stored twice.
     """
+    username = _scoped_username(_viewer(request))
     with _dict_conn() as c:
         rows = c.execute(
             """
@@ -197,9 +309,11 @@ def users():
                    COUNT(j.job_id) FILTER (WHERE j.status='FAILED')    AS failed
               FROM Users u
               LEFT JOIN Jobs j ON j.user_id = u.user_id
+             WHERE (%s::text IS NULL OR u.username = %s)
              GROUP BY u.user_id, u.username, u.role, u.quota_cpus, u.quota_ram_mb
              ORDER BY u.user_id
-            """
+            """,
+            (username, username),
         ).fetchall()
 
         active: dict[str, list[int]] = {}
@@ -227,7 +341,7 @@ def users():
 
 
 @router.get("/history")
-def history(minutes: int = 15):
+def history(request: Request, minutes: int = 15):
     """Recent time series for the analytics charts.
 
     Metrics_Samples is written per cluster per sampler tick; Engine_Sample once
@@ -235,6 +349,7 @@ def history(minutes: int = 15):
     from these arrays.
     """
     minutes = max(1, min(minutes, 240))
+    username = _scoped_username(_viewer(request))
     with _dict_conn() as c:
         metrics = c.execute(
             """
@@ -243,9 +358,14 @@ def history(minutes: int = 15):
                    s.holes, s.largest_free_mb, s.frag_index
               FROM Metrics_Samples s JOIN Machines m USING (machine_id)
              WHERE s.ts > NOW() - (%s || ' minutes')::interval
+               AND (%s::text IS NULL OR s.machine_id IN (
+                     SELECT DISTINCT a.machine_id FROM Allocations a
+                       JOIN Jobs j ON j.job_id = a.job_id
+                       JOIN Users u ON u.user_id = j.user_id
+                      WHERE u.username = %s))
              ORDER BY s.ts
             """,
-            (minutes,),
+            (minutes, username, username),
         ).fetchall()
         engine = c.execute(
             """
@@ -265,9 +385,10 @@ def history(minutes: int = 15):
 
 
 @router.get("/events")
-def events(since: int = 0):
+def events(request: Request, since: int = 0):
+    username = _scoped_username(_viewer(request))
     with _dict_conn() as c:
-        return c.execute(
+        rows = c.execute(
             """
             SELECT event_id, ts, kind, severity, message
               FROM System_Events WHERE event_id > %s
@@ -275,17 +396,37 @@ def events(since: int = 0):
             """,
             (since,),
         ).fetchall()
+    if not username:
+        return rows
+    with _dict_conn() as c:
+        own = {
+            int(r["job_id"])
+            for r in c.execute(
+                "SELECT j.job_id FROM Jobs j JOIN Users u ON u.user_id = j.user_id "
+                "WHERE u.username = %s", (username,)
+            ).fetchall()
+        }
+    return [
+        e for e in rows
+        if username in e["message"] or any(f"#{jid}" in e["message"] for jid in own)
+    ]
 
 
 @router.get("/stats")
-def stats():
+def stats(request: Request):
+    username = _scoped_username(_viewer(request))
     with _dict_conn() as c:
         txn = c.execute(
             """
-            SELECT op, outcome, COUNT(*) AS n, ROUND(AVG(duration_ms),2) AS avg_ms,
-                   MAX(duration_ms) AS max_ms
-              FROM Txn_Log GROUP BY op, outcome ORDER BY op, outcome
-            """
+            SELECT t.op, t.outcome, COUNT(*) AS n, ROUND(AVG(t.duration_ms),2) AS avg_ms,
+                   MAX(t.duration_ms) AS max_ms
+              FROM Txn_Log t
+             WHERE (%s::text IS NULL OR t.job_id IN (
+                     SELECT j.job_id FROM Jobs j JOIN Users u ON u.user_id = j.user_id
+                      WHERE u.username = %s))
+             GROUP BY t.op, t.outcome ORDER BY t.op, t.outcome
+            """,
+            (username, username),
         ).fetchall()
         util = c.execute(
             """
@@ -297,23 +438,38 @@ def stats():
               JOIN Machines m USING (machine_id)
               JOIN CPU_Resources c USING (machine_id)
               JOIN Memory_Resources r USING (machine_id)
+             WHERE (%s::text IS NULL OR s.machine_id IN (
+                     SELECT DISTINCT a.machine_id FROM Allocations a
+                       JOIN Jobs j ON j.job_id = a.job_id
+                       JOIN Users u ON u.user_id = j.user_id
+                      WHERE u.username = %s))
              GROUP BY m.hostname ORDER BY m.hostname
-            """
+            """,
+            (username, username),
         ).fetchall()
         defrag = c.execute(
             """
-            SELECT ROUND(AVG(frag_before),4) AS avg_before,
-                   ROUND(AVG(frag_after),4)  AS avg_after,
-                   COUNT(*) AS runs, SUM(mb_moved) AS mb_moved
-              FROM Defrag_Events WHERE status='COMMITTED'
-            """
+            SELECT ROUND(AVG(d.frag_before),4) AS avg_before,
+                   ROUND(AVG(d.frag_after),4)  AS avg_after,
+                   COUNT(*) AS runs, SUM(d.mb_moved) AS mb_moved
+              FROM Defrag_Events d
+             WHERE d.status='COMMITTED'
+               AND (%s::text IS NULL OR d.machine_id IN (
+                     SELECT DISTINCT a.machine_id FROM Allocations a
+                       JOIN Jobs j ON j.job_id = a.job_id
+                       JOIN Users u ON u.user_id = j.user_id
+                      WHERE u.username = %s))
+            """,
+            (username, username),
         ).fetchone()
         throughput = c.execute(
             """
             SELECT COUNT(*) AS done,
-                   ROUND(EXTRACT(EPOCH FROM (MAX(completed_at)-MIN(completed_at))),1) AS span_sec
-              FROM Jobs WHERE status='COMPLETED'
-            """
+                   ROUND(EXTRACT(EPOCH FROM (MAX(j.completed_at)-MIN(j.completed_at))),1) AS span_sec
+              FROM Jobs j JOIN Users u ON u.user_id = j.user_id
+             WHERE j.status='COMPLETED' AND (%s::text IS NULL OR u.username = %s)
+            """,
+            (username, username),
         ).fetchone()
     return {"txn": txn, "utilization": util, "defrag": defrag, "throughput": throughput}
 
@@ -322,7 +478,8 @@ def stats():
 # engine control
 # ----------------------------------------------------------------------
 @router.post("/engine/start")
-def start_engine(workers: int = 4, policy: str = "auto"):
+def start_engine(request: Request, workers: int = 4, policy: str = "auto"):
+    auth.require_admin(_viewer(request))
     global _engine
     if _engine and _engine.running():
         return {"ok": True, "already": True}
@@ -343,7 +500,8 @@ def start_engine(workers: int = 4, policy: str = "auto"):
 
 
 @router.post("/engine/stop")
-def stop_engine():
+def stop_engine(request: Request):
+    auth.require_admin(_viewer(request))
     if _engine:
         _engine.stop()
         with _dict_conn(autocommit=True) as c:
@@ -354,7 +512,8 @@ def stop_engine():
 
 
 @router.post("/policy")
-def policy(body: Policy):
+def policy(request: Request, body: Policy):
+    auth.require_admin(_viewer(request))
     get_engine().policy_mode = body.mode
     return {"ok": True, "mode": body.mode}
 
@@ -418,7 +577,13 @@ def _check_quota(conn, username: str, cpus: int, ram_mb: int) -> None:
 
 
 @router.post("/jobs")
-def submit_job(body: SubmitJob):
+def submit_job(request: Request, body: SubmitJob):
+    who = _viewer(request)
+    username = _scoped_username(who)
+    if username:
+        # A regular user can only submit under their own account, whatever the
+        # request body claims.
+        body.user = username
     with _dict_conn(autocommit=True) as c:
         _check_quota(c, body.user, body.cpus, body.ram_mb)
         job = _create_job(c, body)
@@ -431,7 +596,8 @@ def submit_job(body: SubmitJob):
 
 
 @router.post("/jobs/batch")
-def batch(body: Batch):
+def batch(request: Request, body: Batch):
+    auth.require_admin(_viewer(request))
     rng = random.Random(body.seed)
     jobs = []
     with _dict_conn(autocommit=True) as c:
@@ -459,7 +625,8 @@ def batch(body: Batch):
 # defrag & reset
 # ----------------------------------------------------------------------
 @router.post("/defrag")
-def defrag(body: DefragReq | None = None):
+def defrag(request: Request, body: DefragReq | None = None):
+    auth.require_admin(_viewer(request))
     cluster = body.cluster if body else "all"
     # frag.py indexes rows positionally, so use the default tuple-row
     # connection here rather than the dict-row one the read endpoints use.
@@ -491,7 +658,8 @@ def defrag(body: DefragReq | None = None):
 
 
 @router.post("/reset")
-def reset():
+def reset(request: Request):
+    auth.require_admin(_viewer(request))
     # Always join any previous engine (even one that is merely draining) before
     # deleting rows, so no worker can touch jobs that no longer exist.
     if _engine:
@@ -505,7 +673,32 @@ def reset():
 
 
 # ----------------------------------------------------------------------
-# deadlock demonstration -- the report section 5 circular wait, run live
+# real hold-and-wait deadlocks on the live clusters
+# ----------------------------------------------------------------------
+@router.post("/deadlock/trigger")
+def deadlock_trigger(request: Request):
+    auth.require_admin(_viewer(request))
+    eng = get_engine()
+    if not eng.running():
+        raise HTTPException(400, "the engine must be running before triggering a deadlock")
+    who = _viewer(request)
+    with _dict_conn() as c:
+        row = c.execute(
+            "SELECT user_id FROM Users WHERE username = %s",
+            (who.get("username") or "admin",),
+        ).fetchone()
+    owner_id = int(row["user_id"]) if row else 1
+    return eng.live_deadlock.trigger(owner_id)
+
+
+@router.post("/deadlock/resolve")
+def deadlock_resolve(request: Request):
+    auth.require_admin(_viewer(request))
+    return get_engine().live_deadlock.resolve()
+
+
+# ----------------------------------------------------------------------
+# legacy scripted scenario -- kept for the report walkthrough and tests
 # ----------------------------------------------------------------------
 @router.post("/deadlock-demo")
 def deadlock_demo():

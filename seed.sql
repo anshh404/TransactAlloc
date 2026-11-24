@@ -12,10 +12,10 @@ TRUNCATE Execution_Logs, Defrag_Moves, Defrag_Events, Memory_Blocks,
          CPU_Resources, Machines, Users
     RESTART IDENTITY CASCADE;
 
-INSERT INTO Users (username, role, quota_cpus, quota_ram_mb) VALUES
-    ('admin',   'Admin', 64, 262144),
-    ('Archita', 'User',  32, 131072),
-    ('student', 'User',  16,  65536);
+INSERT INTO Users (username, password_hash, role, quota_cpus, quota_ram_mb) VALUES
+    ('admin',   'pbkdf2_sha256:120000:0a35b6d0e3395cd1:da04064f0ef144c1d7afd3bf441848b34d901f317c56d81caacf258bcc491284', 'Admin', 64, 262144),
+    ('Archita', 'pbkdf2_sha256:120000:4970a8d64c8f4ca9:02973d4cca20c879a9efe66ca93288512f4fdbeab10d6f7ee29b5c808bc92a80', 'User',  32, 131072),
+    ('student', 'pbkdf2_sha256:120000:9974a82880a175f2:5aedf3250157be7609c5119e7e0e9c5951786fd57e328e740449335988ebfb94', 'User',  16,  65536);
 
 INSERT INTO Machines (hostname, ip_address, status) VALUES
     ('cluster-alpha', '192.168.1.101', 'ONLINE'),

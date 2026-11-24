@@ -10,24 +10,39 @@
 
 <!-- ============================ sign-in ============================ -->
 <div id="login" class="login-screen">
-  <div class="login-glow"></div>
   <div class="login-card">
     <div class="login-mark">CMS</div>
     <h1>Cloud Management System</h1>
     <p class="login-sub">Adaptive, fragmentation-aware resource orchestration</p>
 
     <div class="field">
-      <label for="loginUser">Account</label>
-      <div id="accountPicker" class="account-picker">
-        <span class="muted small">Loading accounts&hellip;</span>
+      <span class="field-label">Sign in as</span>
+      <div id="roleSwitch" class="role-switch" role="tablist" aria-label="Sign-in role">
+        <button type="button" class="role-opt active" data-role="Admin" role="tab" aria-selected="true">Administrator</button>
+        <button type="button" class="role-opt" data-role="User" role="tab" aria-selected="false">User</button>
       </div>
-      <input id="loginUser" class="text-input" autocomplete="off"
-             placeholder="or type a username"/>
+    </div>
+
+    <div class="field">
+      <label for="loginUser">Username</label>
+      <input id="loginUser" class="text-input" autocomplete="username" placeholder="Username"/>
+    </div>
+    <div class="field">
+      <label for="loginPass">Password</label>
+      <input id="loginPass" class="text-input" type="password" autocomplete="current-password" placeholder="Password"/>
     </div>
 
     <button id="signin" class="btn btn-primary btn-block">Sign in</button>
     <div id="loginErr" class="login-err" hidden></div>
-    <p class="login-foot muted small">Demo authentication &mdash; accounts are the users defined in the database.</p>
+
+    <details class="credentials">
+      <summary>Credentials</summary>
+      <ul>
+        <li><b>admin</b> / admin123 &mdash; Administrator</li>
+        <li><b>Archita</b> / archita123 &mdash; User</li>
+        <li><b>student</b> / student123 &mdash; User</li>
+      </ul>
+    </details>
   </div>
 </div>
 
@@ -51,11 +66,11 @@
 
     <div class="topbar-right">
       <div class="chips">
-        <span class="chip" id="engineChip"><i class="dot"></i><span id="engineText">stopped</span></span>
+        <span class="chip" id="engineChip"><i class="dot"></i><span id="engineText" class="swap-text">stopped</span></span>
         <span class="chip" id="queueChip">queue 0</span>
         <span class="chip" id="policyChip">auto</span>
       </div>
-      <div class="control-group">
+      <div class="control-group admin-only">
         <select id="polMode" class="select-sm" title="Scheduling policy">
           <option value="auto">auto</option>
           <option value="fcfs">fcfs</option>
@@ -86,10 +101,10 @@
           <p class="muted">Live state of the allocation engine and the four clusters.</p>
         </div>
         <div class="section-actions">
-          <button id="batch" class="btn btn-sm">Batch</button>
-          <input id="batchCount" type="number" min="1" max="500" value="20" class="num-input-sm" title="Batch size"/>
-          <button id="defragAll" class="btn btn-sm">Defrag all</button>
-          <button id="reset" class="btn btn-sm btn-danger">Reset</button>
+          <button id="batch" class="btn btn-sm admin-only">Batch</button>
+          <input id="batchCount" type="number" min="1" max="500" value="20" class="num-input-sm admin-only" title="Batch size"/>
+          <button id="defragAll" class="btn btn-sm admin-only">Defrag all</button>
+          <button id="reset" class="btn btn-sm btn-danger admin-only">Reset</button>
         </div>
       </div>
       <div id="kpis" class="kpis"></div>
@@ -103,20 +118,20 @@
           <h2>Account</h2>
           <p class="muted">Quota, in-flight usage and jobs per account.</p>
         </div>
-        <div id="accountTabs" class="tabs"></div>
+        <div id="accountTabs" class="tabs admin-only"></div>
       </div>
 
       <div id="accountCard" class="account-card"></div>
 
       <div class="split">
         <div class="panel">
-          <h3>Submit a job <span class="muted small">as <b id="submitAs">&mdash;</b></span></h3>
+          <h3>Submit a job <span class="muted small submit-as admin-only" id="submitAsWrap">as <b id="submitAs">&mdash;</b></span></h3>
           <form id="jobForm" class="form-grid" autocomplete="off">
             <label>Task<input id="jTask" class="text-input" value="Matrix_Mult"/></label>
             <label>Cores<input id="jCpus" class="text-input" type="number" min="1" value="4"/></label>
-            <label>RAM&nbsp;(MB)<input id="jRam" class="text-input" type="number" min="1" value="8192"/></label>
+            <label>RAM (MB)<input id="jRam" class="text-input" type="number" min="1" value="8192"/></label>
             <label>Priority<input id="jPri" class="text-input" type="number" min="1" max="10" value="5"/></label>
-            <label>Duration&nbsp;(s)<input id="jDur" class="text-input" type="number" min="1" value="8"/></label>
+            <label>Duration (s)<input id="jDur" class="text-input" type="number" min="1" value="8"/></label>
             <button type="submit" class="btn btn-primary">Submit job</button>
           </form>
         </div>
@@ -153,7 +168,7 @@
             <option value="COMPLETED">Completed</option>
             <option value="FAILED">Failed</option>
           </select>
-          <select id="jobUserFilter" class="select-sm"><option value="ALL">All accounts</option></select>
+          <select id="jobUserFilter" class="select-sm admin-only"><option value="ALL">All accounts</option></select>
         </div>
       </div>
       <div class="table-wrap">
@@ -172,12 +187,14 @@
       <div class="section-head">
         <div>
           <h2>Deadlock</h2>
-          <p class="muted">Wait-for graph of the live engine plus a live circular-wait demonstration.</p>
+          <p class="muted">Live wait-for graph and circular-wait recovery for the allocation engine.</p>
         </div>
         <div class="section-actions">
-          <button id="dlDemo" class="btn btn-sm btn-primary">Run deadlock demo</button>
+          <button id="dlTrigger" class="btn btn-sm btn-primary admin-only">Trigger live deadlock</button>
+          <button id="dlResolve" class="btn btn-sm admin-only" disabled>Resolve deadlock</button>
         </div>
       </div>
+      <p class="deadlock-status" id="deadlockStatus"><i class="dot"></i><span id="deadlockStatusText" class="swap-text">Idle</span></p>
       <div class="split">
         <div class="panel">
           <h3>Wait-for graph</h3>
@@ -189,8 +206,8 @@
           <p class="muted small" id="wfgNote"></p>
         </div>
         <div class="panel">
-          <h3>Demo transcript</h3>
-          <div id="demoTranscript" class="transcript muted">Run the demo to see the circular wait resolved live.</div>
+          <h3>Live deadlock timeline</h3>
+          <div id="deadlockTimeline" class="timeline muted">No deadlock activity yet.</div>
         </div>
       </div>
       <div class="panel">

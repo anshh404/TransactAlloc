@@ -85,12 +85,24 @@ py -3 main.py init      # applies schema.sql then seed.sql
 py -3 main.py serve     # http://127.0.0.1:8000
 ```
 
-Open the **Cloud Management System** dashboard, sign in with one of the seeded
-accounts (`admin`, `Archita`, `student` — demo authentication), then press
-**Start** and **Batch**. Use the top navbar to move between Overview, Account,
-Clusters, Jobs, Deadlock and Analytics; the Account tabs show each user's quota
-and jobs. To watch a deadlock form and get rolled back live, press **Run
-deadlock demo** in the Deadlock section.
+Open the **Cloud Management System** dashboard and sign in with a password:
+
+| Account | Password | Role | Sees |
+|---|---|---|---|
+| `admin` | `admin123` | Administrator | every cluster, account, job, event and control |
+| `Archita` | `archita123` | User | only their own jobs, quota, events and analytics |
+| `student` | `student123` | User | only their own jobs, quota, events and analytics |
+
+Pick the matching role tab on the sign-in screen. Engine controls, Batch,
+Defrag, Reset and deadlock controls are administrator-only; regular users can
+submit jobs under their own account. Press **Start** and **Batch** to run work.
+Use the top navbar to move between Overview, Account, Clusters, Jobs, Deadlock
+and Analytics.
+
+In the Deadlock section, **Trigger live deadlock** starts a real hold-and-wait
+between two running jobs on the live clusters. The wait-for graph and timeline
+update as it happens; the cycle is left in place until **Resolve deadlock** is
+pressed, which rolls back the youngest victim and lets the survivor finish.
 
 Other entry points:
 
@@ -117,6 +129,22 @@ avoidance is demo/evaluation-only; use `demo.py --avoidance on` or pure
 evaluation mode instead.
 
 ---
+
+### Authentication and live deadlock API
+
+```
+POST /api/auth/login       {username, password, expected_role} -> {token, user}
+POST /api/auth/logout      (Bearer token)
+GET  /api/auth/me          (Bearer token)
+POST /api/deadlock/trigger (admin)  -> starts a real two-phase circular wait
+POST /api/deadlock/resolve (admin)  -> rolls back the victim and clears the cycle
+```
+
+All `/api/*` calls from the dashboard send `Authorization: Bearer <token>`.
+Read responses are scoped to the signed-in identity. Requests without a token
+keep the original legacy behaviour used by the CLI and the pytest suite.
+`POST /api/deadlock-demo` is retained only for the original report walkthrough
+and its tests; the dashboard does not call it.
 
 ## Tests
 

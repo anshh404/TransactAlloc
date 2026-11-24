@@ -38,11 +38,14 @@ DROP TABLE IF EXISTS Users            CASCADE;
 -- 1. Who submits work, and under what quota
 -- ---------------------------------------------------------------------
 CREATE TABLE Users (
-    user_id      SERIAL PRIMARY KEY,
-    username     TEXT NOT NULL UNIQUE,
-    role         TEXT NOT NULL CHECK (role IN ('Admin', 'User')),
-    quota_cpus   INT  NOT NULL CHECK (quota_cpus   >= 0),
-    quota_ram_mb INT  NOT NULL CHECK (quota_ram_mb >= 0)
+    user_id       SERIAL PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE,
+    -- PBKDF2-HMAC-SHA256 verifier: "pbkdf2_sha256:iterations:salt:digest".
+    -- NULL only for accounts that have not been provisioned with a password.
+    password_hash TEXT,
+    role          TEXT NOT NULL CHECK (role IN ('Admin', 'User')),
+    quota_cpus    INT  NOT NULL CHECK (quota_cpus   >= 0),
+    quota_ram_mb  INT  NOT NULL CHECK (quota_ram_mb >= 0)
 );
 
 -- ---------------------------------------------------------------------
