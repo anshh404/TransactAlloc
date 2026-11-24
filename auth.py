@@ -18,6 +18,7 @@ import secrets
 import threading
 import time
 
+import psycopg
 from psycopg.rows import dict_row
 
 import db
@@ -75,6 +76,54 @@ def ensure_passwords() -> None:
                 "WHERE username = %s AND password_hash IS NULL",
                 (verifier, username),
             )
+
+
+# ---------------------------------------------------------------------
+# profile provisioning and credentials
+# ---------------------------------------------------------------------
+def create_user(username: str, password: str, role: str,
+                quota_cpus: int, quota_ram_mb: int) -> dict | None:
+    """Provision a new account with a salted verifier; None if the name is taken.
+
+    The verifier format is the same one ensure_passwords() provisions, so
+    login() works for seeded and newly added accounts identically.
+    """
+    verifier = hash_password(password)
+    with db.connect(autocommit=True, row_factory=dict_row) as c:
+        try:
+            row = c.execute(
+                "INSERT INTO Users (username, password_hash, role, quota_cpus, quota_ram_mb) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "RETURNING user_id, username, role, quota_cpus, quota_ram_mb",
+                (username.strip(), verifier, role, int(quota_cpus), int(quota_ram_mb)),
+            ).fetchone()
+        except psycopg.errors.UniqueViolation:
+            return None
+    return dict(row)
+
+
+def change_password(user_id: int, old_password: str, new_password: str,
+                    keep_token: str | None = None) -> bool:
+    """Verify the old password, store a new verifier, drop other sessions."""
+    with db.connect(row_factory=dict_row) as c:
+        row = c.execute(
+            "SELECT user_id, password_hash FROM Users WHERE user_id = %s", (user_id,)
+        ).fetchone()
+    if not row or not verify_password(old_password, row["password_hash"]):
+        return False
+    with db.connect(autocommit=True) as c:
+        c.execute(
+            "UPDATE Users SET password_hash = %s WHERE user_id = %s",
+            (hash_password(new_password), user_id),
+        )
+    # Other sessions for this account must not keep working with an old password.
+    # The session that performed the change stays logged in.
+    with _LOCK:
+        for token, session in list(_SESSIONS.items()):
+            if (int(session.get("user_id") or -1) == int(user_id)
+                    and token != keep_token):
+                _SESSIONS.pop(token, None)
+    return True
 
 
 # ---------------------------------------------------------------------

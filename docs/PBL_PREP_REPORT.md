@@ -129,7 +129,7 @@ Load is not constant. `adaptive.choose_policy()` is a pure function of `Context(
 | `api.py` | All `/api/*` routes; JSON payload building, quota checks, engine control, defrag, deadlock endpoints. | `auth.py`, `db.py`, `engine.py`, `defrag.py`, `wfg.py` |
 | `app.py` | ASGI app object, router mount, `/healthz` and `/health`, static file mount, lifespan that calls `auth.ensure_passwords()`. | `api.py`, `auth.py`, `static/` |
 | `main.py` | CLI: `init`, `reset`, `submit`, `batch`, `list`, `stats`, `dashboard`, `run`, `serve`. | `db.py`, `scheduler.py`, `dashboard.py`, `api.py` |
-| `auth.py` | Password hashing/verification, in-memory sessions, `viewer()`, `require_admin()`. | `db.py`, `api.py`, `app.py` |
+| `auth.py` | Password hashing/verification, in-memory sessions, `viewer()`, `require_admin()`, plus `create_user()` and `change_password()` for profiles. | `db.py`, `api.py`, `app.py` |
 | `dashboard.py` | Console renderer: ASCII/Unicode bars of CPU/RAM and active jobs from `v_cluster_status`. | `main.py` |
 | `evaluate.py` | Live policy benchmark through `TestClient` + database-free pure simulation with Banker comparison. | `app.py`, `banker.py`, `policies.py` |
 | `demo.py` | Act 1 batch run + Act 2 the report's 121/122 deadlock, detection or avoidance. | `main.py`, `banker.py`, `wfg.py`, `dashboard.py`, `db.py` |
@@ -510,8 +510,11 @@ Historical database-backed table (generated 2026-10-16 00:30; 20 jobs per policy
 | POST | `/api/auth/login` | verify credentials + role, return token | — |
 | POST | `/api/auth/logout` | drop session | — |
 | GET | `/api/auth/me` | current identity | — |
+| POST | `/api/auth/password` | change own password (`auth.change_password()`), drop other sessions | signed-in user |
+| GET | `/api/profile` | own account row with live quota usage | signed-in user |
 | GET | `/api/state` | clusters, jobs, counts, logs, maps, policy, engine, WFG, viewer, deadlock | no (scoped) |
 | GET | `/api/users` | accounts with quota and live usage | no (scoped) |
+| POST | `/api/users` | add a profile (`auth.create_user()`) with role and quotas | **yes** |
 | GET | `/api/history?minutes=` | `Metrics_Samples` + `Engine_Sample` time series | no (scoped) |
 | GET | `/api/events?since=` | `System_Events` feed | no (scoped) |
 | GET | `/api/stats` | `Txn_Log` summary, utilization, defrag stats, throughput | no (scoped) |
@@ -535,6 +538,7 @@ Historical database-backed table (generated 2026-10-16 00:30; 20 jobs per policy
 |---|---|
 | Overview | KPI tiles (active, queue, completed, throughput/min, avg wait, peak frag with deadlock/defrag counts) and per-cluster cards with CPU/RAM bars, holes, largest free, `frag_index` badge and a free/allocated memory strip built from `state.maps`. |
 | Account | Quota gauges for CPU/RAM, job counts, submit form, and that account's recent jobs. |
+| Profile | Your own account (`GET /api/profile`): username, role, id, live CPU/RAM quota gauges, job counts, and a change-password form. Admin-only **Add profile** button on Overview opens a dialog for a new username/password/role/quotas. |
 | Clusters | Block-level strip per cluster plus cores, RAM, holes, largest free, frag badge, and a **Defrag** button per cluster. |
 | Jobs | Filterable table: id, task, account, cores, RAM, priority, status, node, remaining, wait, turnaround. |
 | Deadlock | SVG wait-for graph with red cycle edges and hover labels from `wfg.edge_details`, status badge, live timeline from `state.deadlock.timeline`, and the system event feed. Buttons: **Trigger live deadlock** / **Resolve deadlock**. |
@@ -729,7 +733,7 @@ Open `http://127.0.0.1:8000`. Sign in: select **Administrator**, type `admin` / 
 
 ### Step 3 — Overview + Start + Batch
 
-Click **Start** (policy `auto`), then **Batch** (count 20).
+Click **Start** (policy `auto`), then **Batch** (count 20). Also click **Add profile** to create one account (e.g. `pblguest` / User / 8 cores / 16 GB) and show it appearing in the Account tab; then open the **Profile** tab to show your own quota usage.
 *Say:* "Watch the policy chip: `auto/<current>`. With a deep queue, `adaptive.choose_policy()` picks round-robin for fairness; the reason is in `Policy_Changes` and the system event feed."
 
 ### Step 4 — Clusters tab

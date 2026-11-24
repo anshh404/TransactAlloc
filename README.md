@@ -31,6 +31,9 @@ into a running web service with a real block-level memory model.
   circular-wait scenario end to end.
 - **Shows it all live**: cluster load bars, a memory fragmentation strip per
   cluster, job table, wait-for graph, defrag history, event feed.
+- **Manages profiles**: an admin can add an account with a role and quotas from
+  the **Add profile** button; every signed-in user gets a **Profile** page with
+  live quota usage and a password-change form.
 
 ---
 
@@ -98,8 +101,11 @@ Open the **Cloud Management System** dashboard and sign in with a password:
 Pick the matching role tab on the sign-in screen. Engine controls, Batch,
 Defrag, Reset and deadlock controls are administrator-only; regular users can
 submit jobs under their own account. Press **Start** and **Batch** to run work.
-Use the top navbar to move between Overview, Account, Clusters, Jobs, Deadlock
-and Analytics.
+Use the top navbar to move between Overview, Account, Profile, Clusters, Jobs,
+Deadlock and Analytics. **Add profile** (admin) opens a form for a new username,
+password, role and quotas; the new account can sign in immediately. The
+**Profile** page shows your own quota usage and lets you change your password
+(other sessions for that account are signed out).
 
 In the Deadlock section, **Trigger live deadlock** starts a real hold-and-wait
 between two running jobs on the live clusters. The wait-for graph and timeline
@@ -138,6 +144,9 @@ evaluation mode instead.
 POST /api/auth/login       {username, password, expected_role} -> {token, user}
 POST /api/auth/logout      (Bearer token)
 GET  /api/auth/me          (Bearer token)
+GET  /api/profile          (Bearer token)  -> own account + live quota usage
+POST /api/auth/password    (Bearer token)  {old_password, new_password}
+POST /api/users            (admin)  {username, password, role, quota_cpus, quota_ram_mb}
 POST /api/deadlock/trigger (admin)  -> starts a real two-phase circular wait
 POST /api/deadlock/resolve (admin)  -> rolls back the victim and clears the cycle
 ```

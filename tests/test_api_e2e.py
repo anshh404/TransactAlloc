@@ -13,6 +13,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app as app_module
+import auth
+import db
 
 
 @pytest.fixture(scope="module")
@@ -142,6 +144,85 @@ def test_deadlock_demo(client):
     ])
     assert len(graph["edge_details"]) == 2
     assert len({detail["machine_id"] for detail in graph["edge_details"]}) == 2
+
+
+def _bearer(token):
+    return {"Authorization": f"Bearer {token}"}
+
+
+def test_add_profile_admin_only_and_login(client):
+    token = client.post("/api/auth/login", json={
+        "username": "admin", "password": "admin123", "expected_role": "Admin",
+    }).json()["token"]
+    spec = {
+        "username": "pbltester", "password": "pass123", "role": "User",
+        "quota_cpus": 4, "quota_ram_mb": 8192,
+    }
+    try:
+        created = client.post("/api/users", headers=_bearer(token), json=spec)
+        assert created.status_code == 200, created.text
+        assert created.json()["user"]["username"] == "pbltester"
+        names = {u["username"] for u in client.get("/api/users").json()["users"]}
+        assert "pbltester" in names
+
+        good = client.post("/api/auth/login", json={
+            "username": "pbltester", "password": "pass123", "expected_role": "User",
+        })
+        assert good.status_code == 200
+        wrong_role = client.post("/api/auth/login", json={
+            "username": "pbltester", "password": "pass123", "expected_role": "Admin",
+        })
+        assert wrong_role.status_code == 401
+        duplicate = client.post("/api/users", headers=_bearer(token), json=spec)
+        assert duplicate.status_code == 409
+        blank = client.post("/api/users", headers=_bearer(token), json={**spec, "username": "   "})
+        assert blank.status_code == 400
+
+        user_token = client.post("/api/auth/login", json={
+            "username": "Archita", "password": "archita123", "expected_role": "User",
+        }).json()["token"]
+        denied = client.post("/api/users", headers=_bearer(user_token), json={
+            "username": "notallowed", "password": "x", "role": "Admin",
+            "quota_cpus": 1, "quota_ram_mb": 1,
+        })
+        assert denied.status_code == 403
+    finally:
+        with db.connect(autocommit=True) as c:
+            c.execute("DELETE FROM Users WHERE username = %s", ("pbltester",))
+
+
+def test_profile_endpoint_and_password_change(client):
+    token = client.post("/api/auth/login", json={
+        "username": "Archita", "password": "archita123", "expected_role": "User",
+    }).json()["token"]
+    headers = _bearer(token)
+    try:
+        me = client.get("/api/profile", headers=headers)
+        assert me.status_code == 200, me.text
+        body = me.json()["profile"]
+        assert body["username"] == "Archita" and body["role"] == "User"
+        assert body["quota_cpus"] == 32 and body["free_cpus"] == 32
+        assert client.get("/api/profile").status_code == 401
+
+        wrong = client.post("/api/auth/password", headers=headers, json={
+            "old_password": "wrong", "new_password": "fresh123",
+        })
+        assert wrong.status_code == 403
+        changed = client.post("/api/auth/password", headers=headers, json={
+            "old_password": "archita123", "new_password": "fresh123",
+        })
+        assert changed.status_code == 200, changed.text
+        assert client.post("/api/auth/login", json={
+            "username": "Archita", "password": "fresh123", "expected_role": "User",
+        }).status_code == 200
+        assert client.post("/api/auth/login", json={
+            "username": "Archita", "password": "archita123", "expected_role": "User",
+        }).status_code == 401
+    finally:
+        # Other tests and the dashboard expect the seeded password.
+        with db.connect(autocommit=True) as c:
+            c.execute("UPDATE Users SET password_hash = %s WHERE username = %s",
+                      (auth.hash_password("archita123"), "Archita"))
 
 
 def test_engine_stop(client):

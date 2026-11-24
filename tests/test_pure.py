@@ -4,9 +4,18 @@ import time
 
 import adaptive
 import api
+import auth
 import policies
 import worker
 import wfg
+
+
+def test_password_hashing_is_salted_and_verified():
+    verifier = auth.hash_password("hello")
+    assert verifier.startswith("pbkdf2_sha256:120000:")
+    assert auth.verify_password("hello", verifier)
+    assert not auth.verify_password("wrong", verifier)
+    assert not auth.verify_password("hello", None)
 
 
 def test_policies_self_check():

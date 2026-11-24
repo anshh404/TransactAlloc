@@ -53,6 +53,19 @@ class LoginBody(BaseModel):
     expected_role: str = Field(pattern=r"^(Admin|User)$")
 
 
+class NewUser(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1)
+    role: str = Field(pattern=r"^(Admin|User)$")
+    quota_cpus: int = Field(ge=0, default=0)
+    quota_ram_mb: int = Field(ge=0, default=0)
+
+
+class PasswordChange(BaseModel):
+    old_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=1)
+
+
 def _dict_conn(autocommit=False):
     return db.connect(autocommit=autocommit, row_factory=dict_row)
 
@@ -134,6 +147,19 @@ def auth_me(request: Request):
     if not who.get("authenticated"):
         raise HTTPException(401, "not authenticated")
     return {"ok": True, "user": _viewer_payload(who)}
+
+
+@router.post("/auth/password")
+def change_password(request: Request, body: PasswordChange):
+    """Change the signed-in account's password; other sessions are dropped."""
+    who = _viewer(request)
+    if not who.get("authenticated") or who.get("user_id") is None:
+        raise HTTPException(401, "not authenticated")
+    ok = auth.change_password(int(who["user_id"]), body.old_password,
+                              body.new_password, auth.bearer_token(request))
+    if not ok:
+        raise HTTPException(403, "current password is incorrect")
+    return {"ok": True}
 
 
 # ----------------------------------------------------------------------
@@ -338,6 +364,61 @@ def users(request: Request):
         r["ram_pct"] = round(100.0 * r["used_ram_mb"] / r["quota_ram_mb"], 1) if r["quota_ram_mb"] else 0.0
         r["active_clusters"] = sorted(active.get(r["username"], []))
     return {"users": rows}
+
+
+@router.get("/profile")
+def profile(request: Request):
+    """The signed-in account's own row, with usage computed from Jobs."""
+    who = _viewer(request)
+    if not who.get("authenticated") or who.get("user_id") is None:
+        raise HTTPException(401, "not authenticated")
+    uid = int(who["user_id"])
+    with _dict_conn() as c:
+        row = c.execute(
+            """
+            SELECT u.user_id, u.username, u.role, u.quota_cpus, u.quota_ram_mb,
+                   COALESCE(SUM(j.req_cpus)   FILTER (WHERE j.status IN ('QUEUED','RUNNING')), 0) AS used_cpus,
+                   COALESCE(SUM(j.req_ram_mb) FILTER (WHERE j.status IN ('QUEUED','RUNNING')), 0) AS used_ram_mb,
+                   COUNT(j.job_id) FILTER (WHERE j.status='QUEUED')    AS queued,
+                   COUNT(j.job_id) FILTER (WHERE j.status='RUNNING')   AS running,
+                   COUNT(j.job_id) FILTER (WHERE j.status='COMPLETED') AS completed,
+                   COUNT(j.job_id) FILTER (WHERE j.status='FAILED')    AS failed
+              FROM Users u
+              LEFT JOIN Jobs j ON j.user_id = u.user_id
+             WHERE u.user_id = %s
+             GROUP BY u.user_id, u.username, u.role, u.quota_cpus, u.quota_ram_mb
+            """,
+            (uid,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "profile not found")
+    for key in ("user_id", "quota_cpus", "quota_ram_mb", "used_cpus", "used_ram_mb",
+                "queued", "running", "completed", "failed"):
+        row[key] = int(row[key])
+    row["free_cpus"] = max(0, row["quota_cpus"] - row["used_cpus"])
+    row["free_ram_mb"] = max(0, row["quota_ram_mb"] - row["used_ram_mb"])
+    row["cpu_pct"] = round(100.0 * row["used_cpus"] / row["quota_cpus"], 1) if row["quota_cpus"] else 0.0
+    row["ram_pct"] = round(100.0 * row["used_ram_mb"] / row["quota_ram_mb"], 1) if row["quota_ram_mb"] else 0.0
+    return {"ok": True, "profile": row}
+
+
+@router.post("/users")
+def create_user(request: Request, body: NewUser):
+    """Admin-only: provision a new account with a role and quotas."""
+    auth.require_admin(_viewer(request))
+    if not body.username.strip():
+        raise HTTPException(400, "username cannot be blank")
+    row = auth.create_user(body.username, body.password, body.role,
+                           body.quota_cpus, body.quota_ram_mb)
+    if row is None:
+        raise HTTPException(409, "username already exists")
+    with _dict_conn(autocommit=True) as c:
+        c.execute(
+            "INSERT INTO System_Events (ts,kind,severity,message) VALUES (NOW(),'ENGINE','INFO',%s)",
+            (f"profile created: {row['username']} ({body.role}) "
+             f"{body.quota_cpus}c/{body.quota_ram_mb}MB",),
+        )
+    return {"ok": True, "user": row}
 
 
 @router.get("/history")

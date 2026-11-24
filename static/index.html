@@ -58,6 +58,7 @@
     <nav id="nav" class="nav">
       <a href="#overview" class="nav-link">Overview</a>
       <a href="#account"  class="nav-link">Account</a>
+      <a href="#profile" class="nav-link">Profile</a>
       <a href="#clusters" class="nav-link">Clusters</a>
       <a href="#jobs"     class="nav-link">Jobs</a>
       <a href="#deadlock" class="nav-link">Deadlock</a>
@@ -101,6 +102,7 @@
           <p class="muted">Live state of the allocation engine and the four clusters.</p>
         </div>
         <div class="section-actions">
+          <button id="addProfile" class="btn btn-sm admin-only">Add profile</button>
           <button id="batch" class="btn btn-sm admin-only">Batch</button>
           <input id="batchCount" type="number" min="1" max="500" value="20" class="num-input-sm admin-only" title="Batch size"/>
           <button id="defragAll" class="btn btn-sm admin-only">Defrag all</button>
@@ -139,6 +141,26 @@
           <h3>Jobs by this account</h3>
           <div id="accountJobs" class="mini-jobs"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- ---------------------------- profile ----------------------------- -->
+    <section id="profile" class="section">
+      <div class="section-head">
+        <div>
+          <h2>Profile</h2>
+          <p class="muted">Your account, live quota usage and password.</p>
+        </div>
+      </div>
+      <div id="profileCard" class="account-card"></div>
+      <div class="panel">
+        <h3>Change password</h3>
+        <form id="passwordForm" class="form-grid" autocomplete="off">
+          <label>Current password<input id="pwdOld" class="text-input" type="password" autocomplete="current-password"/></label>
+          <label>New password<input id="pwdNew" class="text-input" type="password" autocomplete="new-password"/></label>
+          <button type="submit" class="btn btn-primary">Change password</button>
+        </form>
+        <p class="muted small" style="margin-top:12px">Changing your password signs out your other sessions.</p>
       </div>
     </section>
 
@@ -262,6 +284,24 @@
     </footer>
   </main>
 </div>
+
+<!-- ========================== add-profile modal ====================== -->
+<dialog id="profileDialog" class="modal">
+  <form id="addProfileForm" class="form-grid">
+    <h3 style="grid-column:1/-1">Add a profile</h3>
+    <label>Username<input id="newUser" class="text-input" required maxlength="64" autocomplete="off"/></label>
+    <label>Password<input id="newPass" class="text-input" type="password" required/></label>
+    <label>Role
+      <select id="newRole" class="text-input"><option value="User">User</option><option value="Admin">Admin</option></select>
+    </label>
+    <label>CPU quota<input id="newCpus" class="text-input" type="number" min="0" value="16"/></label>
+    <label>RAM quota (MB)<input id="newRam" class="text-input" type="number" min="0" value="65536"/></label>
+    <div class="modal-actions">
+      <button type="button" id="profileDialogCancel" class="btn">Cancel</button>
+      <button type="submit" class="btn btn-primary">Add profile</button>
+    </div>
+  </form>
+</dialog>
 
 <div id="toasts" class="toasts"></div>
 <script src="/app.js"></script>

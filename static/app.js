@@ -34,6 +34,7 @@ let activeAccount = null;        // admin-only account tab selection
 let users = [];
 let state = null;
 let stats = null;
+let profile = null;
 let history = null;
 let cycleNodes = new Set();
 let lastTimelineCount = 0;       // so the live timeline only animates new lines
@@ -47,6 +48,7 @@ function clearSession() {
   activeAccount = null;
   users = [];
   state = null;
+  profile = null;
   localStorage.removeItem("cms.token");
   $("app").hidden = true;
   showLogin();
@@ -174,6 +176,7 @@ function enterApp() {
   applyRole();
   refresh();
   refreshUsers();
+  refreshProfile();
   refreshStats();
   refreshHistory();
 }
@@ -337,6 +340,36 @@ function renderAccount() {
       <span class="status ${j.status}">${cap(j.status)}</span>
       <span class="meta">${j.req_cpus}c · ${j.req_ram_mb}MB</span>`));
   }
+}
+
+function renderProfile() {
+  const box = $("profileCard");
+  if (!box) return;
+  if (!profile) { box.innerHTML = `<div class="empty">No profile loaded.</div>`; return; }
+  const cpuPct = profile.quota_cpus ? (profile.used_cpus / profile.quota_cpus) * 100 : 0;
+  const ramPct = profile.quota_ram_mb ? (profile.used_ram_mb / profile.quota_ram_mb) * 100 : 0;
+  box.innerHTML = `
+    <div class="acct-ident">
+      <span class="avatar">${esc((profile.username || "?")[0].toUpperCase())}</span>
+      <div><h3>${esc(profile.username)}</h3>
+        <span class="acct-role">${esc(cap(profile.role))}</span>
+        <div class="muted small" style="margin-top:6px">Account #${profile.user_id}</div>
+      </div>
+    </div>
+    <div class="gauge">
+      <div class="metric-row"><span class="k">CPU quota</span>
+        <span class="v">${profile.used_cpus}/${profile.quota_cpus} cores</span></div>
+      <div class="bar"><i class="fill-cpu" style="--v:${Math.min(1, cpuPct / 100).toFixed(4)}"></i></div>
+      <div class="metric-row" style="margin-top:8px"><span class="k">RAM quota</span>
+        <span class="v">${num(profile.used_ram_mb / 1024, 1)}/${num(profile.quota_ram_mb / 1024, 1)} GB</span></div>
+      <div class="bar"><i class="fill-ram" style="--v:${Math.min(1, ramPct / 100).toFixed(4)}"></i></div>
+    </div>
+    <div class="gauge">
+      <div class="metric-row"><span class="k">Queued</span><span class="v">${profile.queued}</span></div>
+      <div class="metric-row"><span class="k">Running</span><span class="v">${profile.running}</span></div>
+      <div class="metric-row"><span class="k">Completed</span><span class="v">${profile.completed}</span></div>
+      <div class="metric-row"><span class="k">Failed</span><span class="v">${profile.failed}</span></div>
+    </div>`;
 }
 
 function renderClusterDetails() {
@@ -700,11 +733,16 @@ async function refresh() {
     renderKPIs();
     renderClusterCards();
     if (users.length) { renderAccountTabs(); renderAccount(); }
+    if (profile) renderProfile();
     renderClusterDetails();
     renderJobs();
     renderDeadlock();
     renderStats();
   } catch (e) { console.warn(e); }
+}
+async function refreshProfile() {
+  try { profile = (await api("/api/profile")).profile; renderProfile(); }
+  catch (e) { console.warn(e); }   // api() clears the session on 401
 }
 async function refreshUsers() {
   try {
@@ -811,6 +849,39 @@ function wireActions() {
   $("jobUserFilter").onchange = renderJobs;
   $("dlTrigger").onclick = triggerDeadlock;
   $("dlResolve").onclick = resolveDeadlock;
+
+  $("addProfile").onclick = () => {
+    $("addProfileForm").reset();
+    $("profileDialog").showModal();
+  };
+  $("profileDialogCancel").onclick = () => $("profileDialog").close();
+  $("addProfileForm").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const body = {
+      username: $("newUser").value.trim(),
+      password: $("newPass").value,
+      role: $("newRole").value,
+      quota_cpus: +$("newCpus").value,
+      quota_ram_mb: +$("newRam").value,
+    };
+    try {
+      const r = await post("/api/users", body);
+      $("profileDialog").close();
+      toast("Profile added", `${r.user.username} (${r.user.role})`, "ok");
+      refreshUsers(); refresh();
+    } catch (e) { toast("Add profile failed", e.message, "err"); }
+  };
+  $("passwordForm").onsubmit = async (ev) => {
+    ev.preventDefault();
+    try {
+      await post("/api/auth/password", {
+        old_password: $("pwdOld").value,
+        new_password: $("pwdNew").value,
+      });
+      $("pwdOld").value = ""; $("pwdNew").value = "";
+      toast("Password changed", "Use it next time you sign in.", "ok");
+    } catch (e) { toast("Password change failed", e.message, "err"); }
+  };
 }
 
 function populateUserFilter() {
@@ -841,4 +912,4 @@ async function boot() {
 
 setInterval(() => { if (TOKEN && state) refresh(); }, 1000);
 setInterval(() => { if (TOKEN) refreshUsers(); }, 2500);
-setInterval(() => { if (TOKEN) { refreshStats(); refreshHistory(); } }, 4000);
+setInterval(() => { if (TOKEN) { refreshStats(); refreshHistory(); refreshProfile(); } }, 4000);
