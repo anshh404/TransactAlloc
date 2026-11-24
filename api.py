@@ -287,7 +287,15 @@ def state(request: Request):
 
     eng = _engine
     wfg_payload = _wfg_state(eng)
-    if username:
+    # A live two-phase deadlock is a cluster-wide teaching scenario: its
+    # status, cycle and timeline are already visible to every viewer. Hiding
+    # only the edges from a regular user makes the Deadlock tab show "cycle
+    # present" over an empty graph, so keep those edges unscoped while a
+    # session is active. Ordinary wait-for edges stay owner-scoped.
+    live_session = bool(
+        eng and hasattr(eng, "live_deadlock") and eng.live_deadlock.has_active()
+    )
+    if username and not live_session:
         wfg_payload = {
             "edges": [e for e in wfg_payload["edges"] if e[0] in own_ids or e[1] in own_ids],
             "edge_details": [
