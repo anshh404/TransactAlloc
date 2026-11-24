@@ -4,6 +4,7 @@ Split out of main.py so `uvicorn app:app` and `python main.py serve` both
 work, and so tests can import the app without launching a server.
 """
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 
@@ -22,23 +23,27 @@ from fastapi.responses import JSONResponse
 import api
 import auth
 
-app = FastAPI(title="TransactAlloc", version="1.0.0",
-              description="Adaptive cloud resource manager with fragmentation-aware reallocation")
-app.include_router(api.router, prefix="/api")
 
-
-@app.on_event("startup")
-def provision_passwords():
-    """Idempotent: older databases gain password verifiers on restart."""
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Idempotent: older databases gain password verifiers on restart.
     try:
         auth.ensure_passwords()
     except Exception:
         # A missing database must not stop the app from starting; the login
         # endpoint will report the connection problem to the client.
         pass
+    yield
+
+
+app = FastAPI(title="TransactAlloc", version="1.0.0",
+              description="Adaptive cloud resource manager with fragmentation-aware reallocation",
+              lifespan=lifespan)
+app.include_router(api.router, prefix="/api")
 
 
 @app.get("/healthz")
+@app.get("/health")
 def healthz():
     return JSONResponse({"ok": True})
 
